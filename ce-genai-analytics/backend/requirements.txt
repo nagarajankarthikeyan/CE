@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+
+# Database
+sqlalchemy
+pyodbc
+
+# Environment variables
+python-dotenv
+
+# OpenAI
+openai
+
+# Validation
+pydantic
