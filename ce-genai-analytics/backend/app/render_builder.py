@@ -32,16 +32,71 @@ def prettify_label(col: str) -> str:
     return col.replace("_", " ").strip().title()
 
 
-def format_currency(val):
+def prettify_value(val):
     try:
-        if isinstance(val, (int, float)):
-            return f"${val:,.2f}"
+        if isinstance(val, str):
+            return val.replace("_", " ").strip()
         return val
     except:
         return val
 
 
-def round_number(val):
+def is_currency_column(col_name: str) -> bool:
+    if not col_name:
+        return False
+
+    name = col_name.lower()
+    currency_keywords = [
+        "spend", "cost", "amount", "revenue", "budget",
+        "price", "sales", "media", "value"
+    ]
+    return any(k in name for k in currency_keywords)
+
+
+def is_percent_column(col_name: str) -> bool:
+    if not col_name:
+        return False
+
+    name = col_name.lower()
+    percent_keywords = [
+        "ctr", "rate", "percent", "percentage"
+    ]
+    return any(k in name for k in percent_keywords)
+
+
+def format_value(val, col_name: str = ""):
+    """
+    Smart semantic formatter:
+    - $ for currency
+    - % for rates
+    - Plain numbers for counts
+    - Clean strings for dimensions
+    """
+    try:
+        # Percent
+        if is_percent_column(col_name) and isinstance(val, (int, float)):
+            return f"{round(float(val), 2)}%"
+
+        # Currency
+        if is_currency_column(col_name) and isinstance(val, (int, float)):
+            return f"${round(float(val), 2):,.2f}"
+
+        # Other numbers (counts, impressions, clicks, quarter)
+        if isinstance(val, (int, float)):
+            if float(val).is_integer():
+                return int(val)
+            return round(float(val), 2)
+
+        # Strings
+        if isinstance(val, str):
+            return prettify_value(val)
+
+        return val
+    except:
+        return val
+
+
+def round_numeric(val):
     try:
         if isinstance(val, (int, float)):
             return round(float(val), 2)
@@ -81,7 +136,7 @@ def build_render_spec(question: str, rows: list):
             "kpis": [
                 {
                     "label": prettify_label(key),
-                    "value": format_currency(rows[0][key])
+                    "value": format_value(rows[0][key], key)
                 }
             ],
             "table": {"columns": [], "rows": []},
@@ -107,8 +162,8 @@ def build_render_spec(question: str, rows: list):
 
         if is_date_dim and is_numeric(rows[0].get(c2)):
 
-            y_numeric = [round_number(r[c2]) for r in rows]
-            y_formatted = [format_currency(r[c2]) for r in rows]
+            y_numeric = [round_numeric(r[c2]) for r in rows]
+            y_formatted = [format_value(r[c2], c2) for r in rows]
 
             return {
                 "render_type": "chart",
@@ -117,15 +172,15 @@ def build_render_spec(question: str, rows: list):
                 "table": {
                     "columns": [prettify_label(c1), prettify_label(c2)],
                     "rows": [
-                        [str(r[c1]), format_currency(r[c2])]
+                        [prettify_value(str(r[c1])), format_value(r[c2], c2)]
                         for r in rows
                     ]
                 },
                 "chart": {
                     "type": "line",
-                    "x": [str(r[c1]) for r in rows],
-                    "y": y_numeric,                 # ✅ numeric, 2 decimals
-                    "y_formatted": y_formatted,     # ✅ $ + 2 decimals for UI
+                    "x": [prettify_value(str(r[c1])) for r in rows],
+                    "y": y_numeric,              # numeric only
+                    "y_formatted": y_formatted,  # $ / % for UI
                     "series": []
                 },
                 "ranked_list": [],
@@ -143,10 +198,10 @@ def build_render_spec(question: str, rows: list):
 
             ranked = []
             for r in rows:
-                raw_val = round_number(r.get(metric))
+                raw_val = round_numeric(r.get(metric))
                 ranked.append({
-                    "label": prettify_label(str(r.get(dim))),
-                    "value": format_currency(raw_val),
+                    "label": prettify_value(str(r.get(dim))),
+                    "value": format_value(raw_val, metric),
                     "_raw_value": raw_val
                 })
 
@@ -160,7 +215,7 @@ def build_render_spec(question: str, rows: list):
                 "chart": {
                     "type": "bar",
                     "x": [r["label"] for r in ranked],
-                    "y": [r["_raw_value"] for r in ranked],   # numeric
+                    "y": [r["_raw_value"] for r in ranked],
                     "y_formatted": [r["value"] for r in ranked],
                     "series": []
                 },
@@ -183,7 +238,7 @@ def build_render_spec(question: str, rows: list):
             if is_numeric(val):
                 kpis.append({
                     "label": prettify_label(col),
-                    "value": format_currency(val)
+                    "value": format_value(val, col)
                 })
 
         return {
@@ -193,7 +248,10 @@ def build_render_spec(question: str, rows: list):
             "table": {
                 "columns": [prettify_label(c) for c in columns],
                 "rows": [
-                    [format_currency(r.get(c)) for c in columns]
+                    [
+                        format_value(r.get(c), c)
+                        for c in columns
+                    ]
                     for r in rows[:10]
                 ]
             },
@@ -213,7 +271,10 @@ def build_render_spec(question: str, rows: list):
         "table": {
             "columns": [prettify_label(c) for c in columns],
             "rows": [
-                [format_currency(r.get(c)) for c in columns]
+                [
+                    format_value(r.get(c), c)
+                    for c in columns
+                ]
                 for r in rows
             ]
         },
