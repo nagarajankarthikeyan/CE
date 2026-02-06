@@ -69,6 +69,34 @@ CREATE TABLE DataLakeRaw (
     RawJson NVARCHAR(MAX)
 );
 
+CREATE TABLE Users (
+    UserID INT IDENTITY(1,1) PRIMARY KEY,
+    Email NVARCHAR(255),
+    Username NVARCHAR(100) ,
+    PasswordHash NVARCHAR(255) ,
+    IsActive BIT  DEFAULT 1,
+    CreatedAt DATETIME2
+);
+
+CREATE TABLE AuditLogs (
+    AuditID BIGINT IDENTITY(1,1) PRIMARY KEY,
+    ConversationID NVARCHAR(100) NOT NULL,
+    EventType NVARCHAR(50) NOT NULL,
+    UserID INT,
+    UserMessage NVARCHAR(MAX),
+    GeneratedSQL NVARCHAR(MAX),
+    SQLStatus NVARCHAR(50) NULL,
+    RowsReturned INT,
+    DurationMS BIGINT,
+    ErrorType NVARCHAR(100),
+    ErrorMessage NVARCHAR(MAX),
+    Endpoint NVARCHAR(MAX),
+    HTTPMethod NVARCHAR(10),
+	Response NVARCHAR(MAX),
+    ResponseStatus INT,
+    ResponseDurationMS BIGINT,
+    CreatedAt DATETIME2 DEFAULT GETUTCDATE(),
+);
 
 ## Backend Setup
 
