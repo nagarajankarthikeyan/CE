@@ -1,0 +1,219 @@
+
+
+<!-- HEADER -->
+<div class="app-header">
+  <div class="app-title">
+    CE AI Analytics
+  </div>
+
+  <div class="profile-icon" (click)="toggleProfileMenu()">
+    {{ username[0] | uppercase }}
+  </div>
+  <!-- Dropdown -->
+  <div class="profile-menu" *ngIf="showProfileMenu">
+    <button (click)="logout()">Logout</button>
+  </div>
+</div>
+
+<!-- CHAT WINDOW -->
+<div class="chat-window" #chatWindow>
+
+  <div *ngFor="let m of messages" class="msg">
+
+    <!-- USER -->
+    <div *ngIf="m.role === 'user'" class="bubble user">
+      {{ m.text }}
+    </div>
+
+    <!-- BOT ERROR -->
+    <!-- BOT ERROR - render as normal bot bubble -->
+    <div *ngIf="m.role === 'bot' && m.error" class="bubble bot">
+      {{ m.errorMessage }}
+    </div>
+
+    <!-- BOT STRUCTURED -->
+    <div *ngIf="m.role === 'bot' && m.render" class="bubble bot">
+
+      <!-- KPI -->
+      <div *ngIf="m.render.render_type === 'kpi'" class="kpi-container">
+        <div class="kpi-title" *ngIf="m.render.title">
+          {{ m.render.title }}
+        </div>
+
+        <div class="kpi-row">
+          <div class="kpi-card executive" *ngFor="let k of m.render.kpis">
+            <div class="kpi-label">{{ k.label }}</div>
+            <div class="kpi-big-value">
+              {{ formatKpiValue(k) }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MIXED -->
+      <div *ngIf="m.render.render_type === 'mixed'">
+
+        <div class="kpi-row" *ngIf="m.render.kpis?.length">
+          <div class="kpi-card executive" *ngFor="let k of m.render.kpis">
+            <div class="kpi-label">{{ k.label }}</div>
+            <div class="kpi-big-value">
+              {{ formatKpiValue(k) }}
+            </div>
+          </div>
+        </div>
+
+        <table class="data-table" *ngIf="m.render.table?.rows?.length">
+          <thead>
+            <tr>
+              <th *ngFor="let c of m.render.table.columns">{{ c }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let row of m.render.table.rows">
+              <td *ngFor="let cell of row">{{ cell }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="render-narrative" *ngIf="m.render.narrative">
+          {{ m.render.narrative }}
+        </p>
+      </div>
+
+      <!-- RANKED LIST -->
+      <div *ngIf="m.render.render_type === 'ranked_list'">
+
+        <h3 class="render-title" *ngIf="m.render.title">
+          {{ m.render.title }}
+        </h3>
+
+        <ul class="ranked-list">
+          <li *ngFor="let r of m.render.ranked_list; let i = index">
+
+            <!-- Object form: {label, value} -->
+            <ng-container *ngIf="r?.label; else simpleRank">
+              <strong>{{i + 1}}. {{ r.label }}</strong>
+              <span *ngIf="r.value !== undefined">
+                — {{ r.value }}
+              </span>
+            </ng-container>
+
+            <!-- Simple string/number form -->
+            <ng-template #simpleRank>
+              <strong>{{i + 1}}</strong> {{ r }}
+            </ng-template>
+
+          </li>
+        </ul>
+
+
+
+
+
+        <p *ngIf="m.render.narrative" class="render-narrative">
+          {{ m.render.narrative }}
+        </p>
+
+      </div>
+
+      <!-- PURE TABLE -->
+      <div *ngIf="m.render.render_type === 'table'" class="render-block">
+
+        <h3 class="render-title" *ngIf="m.render.title">
+          {{ m.render.title }}
+        </h3>
+
+        <table class="data-table" *ngIf="m.render.table?.rows?.length">
+          <thead>
+            <tr>
+              <th *ngFor="let c of m.render.table.columns">
+                {{ c }}
+              </th>
+            </tr>
+          </thead>
+
+          <tbody>
+            <tr *ngFor="let row of m.render.table.rows">
+              <td *ngFor="let cell of row">
+                {{ cell }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p *ngIf="m.render.narrative" class="render-narrative">
+          {{ m.render.narrative }}
+        </p>
+
+      </div>
+
+      <!-- CHART -->
+      <div *ngIf="m.render.render_type === 'chart'" class="render-block">
+
+        <h3 class="render-title" *ngIf="m.render.title">
+          {{ m.render.title }}
+        </h3>
+
+        <!-- Simple chart placeholder -->
+        <div class="chart-container">
+          <div class="chart-row" *ngFor="let x of m.render.chart.x; let i = index">
+            <div class="chart-label">{{ x }}</div>
+            <div class="chart-bar" [style.width.%]="(m.render.chart.y[i] / maxChartValue(m.render.chart.y)) * 100">
+              {{ m.render.chart.y[i] }}
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+
+      <!-- PURE NARRATIVE -->
+      <div *ngIf="m.render.render_type === 'narrative'" class="render-block">
+
+        <h3 class="render-title" *ngIf="m.render.title">
+          {{ m.render.title }}
+        </h3>
+
+        <div class="narrative-text">
+          {{ m.render.narrative }}
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- BOT STREAMING TEXT -->
+    <div *ngIf="m.role === 'bot' && m.text" class="bubble bot">
+      {{ m.text }}
+    </div>
+
+  </div>
+
+  <!-- STREAMING TEXT -->
+  <div *ngIf="streamingText" class="bubble bot streaming">
+    {{ streamingText }}
+  </div>
+
+  <!-- TYPING INDICATOR -->
+  <div *ngIf="isStreaming && !streamingText" class="typing-indicator">
+    <span></span><span></span><span></span>
+  </div>
+
+</div>
+
+<!-- INPUT SECTION -->
+<div class="input-section">
+
+  <div class="input-label">
+    Ask any business question about your marketing data
+  </div>
+
+  <div class="bottom-bar">
+    <input [(ngModel)]="message" placeholder="Type your question..." (keydown.enter)="send()" />
+
+    <button (click)="send()" [disabled]="isStreaming">
+      Send
+    </button>
+  </div>
+
+</div>

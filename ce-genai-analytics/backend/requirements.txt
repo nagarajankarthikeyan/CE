@@ -13,3 +13,5 @@ openai
 
 # Validation
 pydantic
+
+passlib[bcrypt]
