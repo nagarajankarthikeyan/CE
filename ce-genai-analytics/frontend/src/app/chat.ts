@@ -37,6 +37,7 @@ export class ChatComponent implements OnInit {
   showProfileMenu = false;
 
   messages: any[] = [];
+  currentRender: any = null;
 
   @ViewChild('chatWindow') chatWindow!: ElementRef;
 
@@ -52,7 +53,7 @@ export class ChatComponent implements OnInit {
     private cd: ChangeDetectorRef,
     private auth: AuthService,
     private router: Router
-  ) {}
+  ) { }
 
   ngOnInit() {
     this.username = this.auth.getUsername();
@@ -187,26 +188,21 @@ export class ChatComponent implements OnInit {
     // =========================
     es.addEventListener('render', (e: any) => {
       hasReceivedValidEvent = true;
-      setTimeout(() => {
-        this.zone.run(() => {
-          try {
-            const renderSpec = JSON.parse(e.data);
-
-            this.messages.push({
-              role: 'bot',
-              render: renderSpec
-            });
-
-            this.isStreaming = false;
-
-            this.cd.detectChanges();
-            this.scrollToBottom();
-
-          } catch (err) {
-            console.error('Failed to parse render spec:', err, e.data);
-          }
-        });
-      }, 0);
+      this.zone.run(() => {
+        try {
+          const renderSpec = JSON.parse(e.data);
+          this.currentRender = renderSpec; // 🔥 IMPORTANT
+          this.messages.push({
+            role: 'bot',
+            render: renderSpec
+          });
+          this.isStreaming = false;
+          this.cd.detectChanges();
+          this.scrollToBottom();
+        } catch (err) {
+          console.error('Failed to parse render spec:', err, e.data);
+        }
+      });
     });
 
     // =========================
@@ -327,5 +323,33 @@ export class ChatComponent implements OnInit {
     return Math.max(...arr.map(v => Number(v) || 0), 1);
   }
 
-
+  getLineChartOptions() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (ctx: any) => {
+              const index = ctx.dataIndex;
+              const formatted =
+                this.currentRender?.chart?.y_formatted?.[index];
+              return formatted ?? ctx.raw;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          ticks: {
+            callback: (_value: any, index: number) => {
+              const formatted =
+                this.currentRender?.chart?.y_formatted?.[index];
+              return formatted ?? _value;
+            }
+          }
+        }
+      }
+    };
+  }
 }

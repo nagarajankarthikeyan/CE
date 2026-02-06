@@ -157,9 +157,11 @@
         <!-- Simple chart placeholder -->
         <div class="chart-container">
           <div class="chart-row" *ngFor="let x of m.render.chart.x; let i = index">
-            <div class="chart-label">{{ x }}</div>
+            <div class="chart-label">
+              {{ x }}
+            </div>
             <div class="chart-bar" [style.width.%]="(m.render.chart.y[i] / maxChartValue(m.render.chart.y)) * 100">
-              {{ m.render.chart.y[i] }}
+              {{ m.render.chart.y_formatted?.[i] || m.render.chart.y[i] }}
             </div>
           </div>
         </div>
