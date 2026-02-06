@@ -1,45 +1,28 @@
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# ===============================
+# BIGQUERY CONFIGURATION
+# ===============================
 
+# GCP Project ID (NOT dataset)
+BIGQUERY_PROJECT = os.getenv("BIGQUERY_PROJECT", "bounteous-bi")
 
-class Settings:
-    # =========================
-    # Database
-    # =========================
-    DB_DRIVER = os.getenv("DB_DRIVER", "{ODBC Driver 17 for SQL Server}")
-    DB_SERVER = os.getenv("DB_SERVER", "localhost\\sqlexpress")
-    DB_NAME = os.getenv("DB_NAME", "CEAnalytics")
-    DB_TRUSTED = os.getenv("DB_TRUSTED", "yes")
+# Dataset name (NOT project.dataset)
+BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "constellation_media_AI_ANALYST")
 
-    # Optional (if you ever switch to SQL auth)
-    DB_USER = os.getenv("DB_USER")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
+# View or Table name
+BIGQUERY_VIEW = os.getenv("BIGQUERY_VIEW", "complete_constellation")
 
-    # =========================
-    # OpenAI
-    # =========================
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Region (must match dataset region exactly)
+BIGQUERY_LOCATION = os.getenv("BIGQUERY_LOCATION", "US")
 
-    def get_odbc_connection_string(self) -> str:
-        # Windows Auth (Trusted Connection)
-        if self.DB_TRUSTED.lower() == "yes":
-            return (
-                f"DRIVER={self.DB_DRIVER};"
-                f"SERVER={self.DB_SERVER};"
-                f"DATABASE={self.DB_NAME};"
-                f"Trusted_Connection=yes;"
-            )
+# ===============================
+# SERVICE ACCOUNT (Optional)
+# ===============================
+# If you want to explicitly set JSON credentials file path
+# Otherwise BigQuery will use GOOGLE_APPLICATION_CREDENTIALS env variable
 
-        # SQL Authentication (optional)
-        return (
-            f"DRIVER={self.DB_DRIVER};"
-            f"SERVER={self.DB_SERVER};"
-            f"DATABASE={self.DB_NAME};"
-            f"UID={self.DB_USER};"
-            f"PWD={self.DB_PASSWORD};"
-        )
-
-
-settings = Settings()
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    ""
+)

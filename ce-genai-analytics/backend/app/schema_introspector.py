@@ -1,27 +1,22 @@
-from app.db import run_query
-import json
-from collections import Counter
+from app.executor import get_bigquery_client
+from app.config import BIGQUERY_PROJECT, BIGQUERY_DATASET, BIGQUERY_VIEW, BIGQUERY_LOCATION
 
+def get_json_schema():
+    client = get_bigquery_client()
 
-def get_json_schema(sample_size: int = 2000):
-    sql = f"""
-    SELECT TOP {sample_size}
-           RawJson
-    FROM DataLakeRaw
+    query = f"""
+    SELECT column_name, data_type
+    FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.INFORMATION_SCHEMA.COLUMNS`
+    WHERE table_name = '{BIGQUERY_VIEW}'
     """
 
-    rows = run_query(sql)
+    job = client.query(query, location=BIGQUERY_LOCATION)
+    rows = job.result()
 
-    field_counts = Counter()
-
-    for r in rows:
-        try:
-            obj = json.loads(r["RawJson"])
-            for k in obj.keys():
-                field_counts[k] += 1
-        except Exception:
-            continue
-
-    # Return fields sorted by frequency (most common first)
-    fields = [k for k, _ in field_counts.most_common()]
-    return fields
+    return [
+        {
+            "name": row.column_name,
+            "type": row.data_type
+        }
+        for row in rows
+    ]

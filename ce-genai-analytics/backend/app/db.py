@@ -1,6 +1,11 @@
 from sqlalchemy import create_engine, text
 from app.config import settings
 
+class Settings:
+    DATABASE_URL = None  # Not used anymore
+
+settings = Settings()
+
 
 def get_connection_string():
     return settings.get_odbc_connection_string()

@@ -1,34 +1,54 @@
-from typing import List, Dict, Any
-from app.db import run_query
+from google.cloud import bigquery
+from app.config import (
+    BIGQUERY_PROJECT,
+    BIGQUERY_DATASET,
+    BIGQUERY_VIEW,
+    BIGQUERY_LOCATION,
+    GOOGLE_APPLICATION_CREDENTIALS
+)
+
+import os
 
 
-def execute_sql(sql: str, params: dict) -> List[Dict[str, Any]]:
+# =========================
+# BigQuery Client
+# =========================
+
+def get_bigquery_client():
+    if GOOGLE_APPLICATION_CREDENTIALS:
+        return bigquery.Client.from_service_account_json(
+            GOOGLE_APPLICATION_CREDENTIALS,
+            project=BIGQUERY_PROJECT,
+            location=BIGQUERY_LOCATION
+        )
+
+    return bigquery.Client(
+        project=BIGQUERY_PROJECT,
+        location=BIGQUERY_LOCATION
+    )
+
+
+# =========================
+# Execute SQL
+# =========================
+
+def execute_sql(sql: str, params: dict | None = None):
     """
-    Executes SQL and returns normalized list of dict rows.
-    Handles empty results safely.
+    Executes SQL in BigQuery and ALWAYS returns:
+        List[Dict]
+    Never Row objects.
+    Never strings.
     """
-    try:
-        rows = run_query(sql, params)
 
-        if not rows:
-            return []
+    client = get_bigquery_client()
 
-        # Normalize Decimal / None if needed
-        normalized = []
-        for row in rows:
-            clean_row = {}
-            for k, v in row.items():
-                if v is None:
-                    clean_row[k] = None
-                else:
-                    try:
-                        clean_row[k] = float(v) if hasattr(v, "as_integer_ratio") else v
-                    except Exception:
-                        clean_row[k] = v
-            normalized.append(clean_row)
+    job = client.query(sql)
+    result = job.result()
 
-        return normalized
+    rows = []
 
-    except Exception as ex:
-        # In production, log this to Serilog / AppInsights / Datadog
-        raise RuntimeError(f"SQL execution failed: {str(ex)}")
+    for row in result:
+        # THIS LINE IS CRITICAL
+        rows.append(dict(row))
+
+    return rows

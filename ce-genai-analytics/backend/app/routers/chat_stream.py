@@ -19,6 +19,10 @@ from app.logging_config import app_logger
 from app.auth import get_current_user
 from fastapi import Depends
 
+import base64
+from fastapi import HTTPException
+from app.auth_service import AuthService
+
 router = APIRouter()
 
 GENERIC_BLOCK_MSG = "I can't perform that action that change system data. I can help with data analysis and retrieval."
@@ -88,8 +92,31 @@ def event(fn: str, stage: str, etype: str) -> str:
     return f"{fn}:{stage}:{etype}"
 
 @router.get("/chat/stream")
-async def chat_stream(request: Request, message: str, conversation_id: str | None = None, user: str = Depends(get_current_user)):
+async def chat_stream(
+    request: Request,
+    message: str,
+    conversation_id: str | None = None,
+    auth: str | None = None
+):
     conversation_id = conversation_id or request.query_params.get("conversation_id") or request.headers.get("X-Conversation-ID") or f"conv-unknown"
+    
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing auth")
+
+    try:
+        decoded = base64.b64decode(auth).decode()
+        email, password = decoded.split(":", 1)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid auth format")
+
+    user = AuthService.authenticate_user(email, password)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    user_id = user.get("user_id")
+
+    
     '''user_id = None
     try:
         uid = request.headers.get("X-User-ID")
@@ -97,7 +124,7 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
             user_id = int(uid)
     except Exception:
         user_id = None'''
-    user_id = user.get("user_id")
+    # user_id = user.get("user_id")
     
     endpoint = request.url.path
     method = request.method
@@ -107,21 +134,21 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
         
         # Audit state - collect data without logging yet
         audit_data = {
-            "conversation_id": conversation_id,
-            "user_id": user_id,
+            "conversationid": conversation_id,
+            # "user_id": user_id,
             "endpoint": endpoint,
-            "method": method,
-            "user_message": message[:2000],
-            "generated_sql": None,
-            "rows_returned": 0,
-            "duration_ms": 0,
-            "sql_status": None,
-            "error_type": None,
-            "error_message": None,
-            "event_type": None,
+            "httpmethod": method,
+            "usermessage": message[:2000],
+            "generatedsql": None,
+            "rowsreturned": 0,
+            "durationms": 0,
+            "sqlstatus": None,
+            "errortype": None,
+            "errormessage": None,
+            "eventtype": None,
             "response": None,
-            "response_status": 200,  # default success
-            "response_duration_ms": 0
+            "responsestatus": 200,  # default success
+            "responsedurationms": 0
         }
         
         try:
@@ -130,13 +157,13 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
             if intent_error:
                 #add function name to log
                 #audit_data["event_type"] = "VALIDATION_ERROR"
-                audit_data["event_type"] = event("event_generator", "check_forbidden_intent", "FORBIDDEN_OPERATION")
-                audit_data["sql_status"] = "BLOCKED"
-                audit_data["error_type"] = "FORBIDDEN_OPERATION"
-                audit_data["error_message"] = intent_error
-                audit_data["response_status"] = 403 
-                audit_data["duration_ms"] = int((time.time() - start_time) * 1000)
-                audit_data["response_duration_ms"] = audit_data["duration_ms"]
+                audit_data["eventtype"] = event("event_generator", "check_forbidden_intent", "FORBIDDEN_OPERATION")
+                audit_data["sqlstatus"] = "BLOCKED"
+                audit_data["errortype"] = "FORBIDDEN_OPERATION"
+                audit_data["errormessage"] = intent_error
+                audit_data["responsestatus"] = 403 
+                audit_data["durationms"] = int((time.time() - start_time) * 1000)
+                audit_data["responsedurationms"] = audit_data["durationms"]
                 audit_data["response"] = json.dumps({"status": "error", "type": "FORBIDDEN_OPERATION", "response_text": intent_error})[:2000]
                 #audit_data["response"] = "".join(full_response_text)[:8000] if full_response_text else str(intent_error)[:2000]
     
@@ -149,22 +176,30 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
 
             # Generate SQL
             json_fields = get_json_schema()
-            raw_sql = generate_sql(message, json_fields)
-            sql = normalize_sql(raw_sql)
-            audit_data["generated_sql"] = sql[:4000]
+            result = generate_sql(message, json_fields)
+
+            if isinstance(result, dict):
+                sql = result.get("sql")
+                intent_type = result.get("intent_type")
+            else:
+                sql = result
+                intent_type = None
+
+
+            audit_data["generatedsql"] = sql[:4000]
 
             # Validate SQL
             try:
                 validate_sql(sql)
             except ValueError as ve:
                 #audit_data["event_type"] = "VALIDATION_ERROR"
-                audit_data["event_type"] = event("event_generator", "validate_sql", "VALIDATION_ERROR")
-                audit_data["sql_status"] = "INVALID"
-                audit_data["error_type"] = "SQL_VALIDATION_FAILED"
-                audit_data["error_message"] = str(ve)[:2000]
-                audit_data["response_status"] = 400
-                audit_data["duration_ms"] = int((time.time() - start_time) * 1000)
-                audit_data["response_duration_ms"] = audit_data["duration_ms"]
+                audit_data["eventtype"] = event("event_generator", "validate_sql", "VALIDATION_ERROR")
+                audit_data["sqlstatus"] = "INVALID"
+                audit_data["errortype"] = "SQL_VALIDATION_FAILED"
+                audit_data["errormessage"] = str(ve)[:2000]
+                audit_data["responsestatus"] = 400
+                audit_data["durationms"] = int((time.time() - start_time) * 1000)
+                audit_data["responsedurationms"] = audit_data["durationms"]
                 audit_data["response"] = json.dumps({"status": "error", "type": "validation_failed", "response_text": str(ve)[:500]})[:2000]
                 #audit_data["response"] = "".join(full_response_text)[:8000] if full_response_text else str(ve)[:2000]
 
@@ -178,13 +213,14 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
             # Execute SQL
             exec_start = time.time()
             rows = execute_sql(sql, {})
+
             exec_duration = int((time.time() - exec_start) * 1000)
             
-            audit_data["rows_returned"] = len(rows)
-            audit_data["event_type"] = event("event_generator", "execute_sql", "SQL_EXECUTED")
-            audit_data["sql_status"] = "SUCCESS"
-            #audit_data["event_type"] = "SQL_EXECUTED"
-            audit_data["duration_ms"] = exec_duration 
+            audit_data["rowsreturned"] = len(rows)
+            audit_data["eventtype"] = event("event_generator", "execute_sql", "SQL_EXECUTED")
+            audit_data["sqlstatus"] = "SUCCESS"
+            audit_data["eventtype"] = "SQL_EXECUTED"
+            audit_data["durationms"] = exec_duration 
             
             # Build render spec
             render_spec = build_render_spec(message, rows)
@@ -202,29 +238,29 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
             
             total_duration = int((time.time() - start_time) * 1000)  # Total from request start to finish
             # Finalize audit data
-            audit_data["duration_ms"] = int((time.time() - start_time) * 1000)
-            audit_data["response_status"] = 200
-            audit_data["response_duration_ms"] = audit_data["duration_ms"]
+            audit_data["durationms"] = int((time.time() - start_time) * 1000)
+            audit_data["responsestatus"] = 200
+            audit_data["responsedurationms"] = audit_data["durationms"]
             audit_data["response"] = json.dumps({
                 "status": "success",
-                "rows_returned": len(rows),
+                "rowsreturned": len(rows),
                 "sql_execution_time_ms": exec_duration,
                 "total_response_time_ms": total_duration,
                 "response_text": "".join(full_response_text)
-            })
+            }, default=json_safe)
             
             # Log once at end with success
             AuditService.log_audit_event(**audit_data)
-            app_logger.info(f"Chat stream completed - {len(rows)} rows in {audit_data['duration_ms']}ms")
+            app_logger.info(f"Chat stream completed - {len(rows)} rows in {audit_data['durationms']}ms")
             
         except ValueError as ve:
             #audit_data["event_type"] = "VALIDATION_ERROR"
-            audit_data["event_type"] = event("event_generator", "execute_sql", "VALIDATION_ERROR")
-            audit_data["error_type"] = "VALIDATION_ERROR"
-            audit_data["error_message"] = str(ve)[:2000]
-            audit_data["response_status"] = 400
-            audit_data["duration_ms"] = int((time.time() - start_time) * 1000)
-            audit_data["response_duration_ms"] = audit_data["duration_ms"]
+            audit_data["eventtype"] = event("event_generator", "execute_sql", "VALIDATION_ERROR")
+            audit_data["errortype"] = "VALIDATION_ERROR"
+            audit_data["errormessage"] = str(ve)[:2000]
+            audit_data["responsestatus"] = 400
+            audit_data["durationms"] = int((time.time() - start_time) * 1000)
+            audit_data["responsedurationms"] = audit_data["durationms"]
             audit_data["response"] = json.dumps({
                 "status": "error", 
                 "type": "validation_error",
@@ -239,13 +275,13 @@ async def chat_stream(request: Request, message: str, conversation_id: str | Non
             
         except Exception as ex:
             #audit_data["event_type"] = "EXECUTION_ERROR"
-            audit_data["event_type"] = event("event_generator", "chat_stream", "EXECUTION_ERROR")
-            audit_data["sql_status"] = "FAILED"
-            audit_data["error_type"] = "EXECUTION_ERROR"
-            audit_data["error_message"] = str(ex)[:2000]
-            audit_data["response_status"] = 500
-            audit_data["duration_ms"] = int((time.time() - start_time) * 1000)
-            audit_data["response_duration_ms"] = audit_data["duration_ms"]
+            audit_data["eventtype"] = event("event_generator", "chat_stream", "EXECUTION_ERROR")
+            audit_data["sqlstatus"] = "FAILED"
+            audit_data["errortype"] = "EXECUTION_ERROR"
+            audit_data["errormessage"] = str(ex)[:2000]
+            audit_data["responsestatus"] = 500
+            audit_data["durationms"] = int((time.time() - start_time) * 1000)
+            audit_data["responsedurationms"] = audit_data["durationms"]
             audit_data["response"] = json.dumps({
                 "status": "error", 
                 "type": "execution_error",

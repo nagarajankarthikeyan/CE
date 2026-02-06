@@ -1,14 +1,23 @@
 from typing import Optional
-from sqlalchemy import text
+from google.cloud import bigquery
 from passlib.context import CryptContext
-from app.db import engine
 from passlib import exc as passlib_exc
+from app.config import (
+    BIGQUERY_PROJECT,
+    BIGQUERY_DATASET,
+    BIGQUERY_LOCATION,
+    GOOGLE_APPLICATION_CREDENTIALS
+)
 import hashlib
-import logging
-
-log = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+client = bigquery.Client.from_service_account_json(
+    GOOGLE_APPLICATION_CREDENTIALS,
+    location=BIGQUERY_LOCATION
+)
+
+USERS_TABLE = "bounteous-bi.constellation_media_AI_ANALYST.Users"
 
 
 class AuthService:
@@ -19,26 +28,15 @@ class AuthService:
 
     @staticmethod
     def verify_password(plain: str, hashed: str) -> bool:
-        """
-        Verify password using passlib; if Passlib can't identify the stored hash,
-        fall back to common legacy hex digests (MD5/SHA1/SHA256) and plaintext.
-        """
         if not hashed:
             return False
 
-        # Try passlib first
         try:
             return pwd_context.verify(plain, hashed)
         except passlib_exc.UnknownHashError:
-            # fallback for legacy hex digests or plaintext
-            h = hashed.strip().lower()
-
-            # plaintext match (legacy)
             if plain == hashed:
-                log.warning("Legacy plaintext password detected")
                 return True
-
-            # hex digest detection -> md5(32), sha1(40), sha256(64)
+            h = hashed.strip().lower()
             try:
                 int(h, 16)
                 is_hex = True
@@ -46,36 +44,44 @@ class AuthService:
                 is_hex = False
 
             if is_hex:
-                if len(h) == 32:   # md5
-                    return hashlib.md5(plain.encode("utf-8")).hexdigest() == h
-                if len(h) == 40:   # sha1
-                    return hashlib.sha1(plain.encode("utf-8")).hexdigest() == h
-                if len(h) == 64:   # sha256
-                    return hashlib.sha256(plain.encode("utf-8")).hexdigest() == h
+                if len(h) == 32:
+                    return hashlib.md5(plain.encode()).hexdigest() == h
+                if len(h) == 40:
+                    return hashlib.sha1(plain.encode()).hexdigest() == h
+                if len(h) == 64:
+                    return hashlib.sha256(plain.encode()).hexdigest() == h
 
             return False
 
     @staticmethod
     def authenticate_user(email: str, password: str) -> Optional[dict]:
-        sql = text("""
-            SELECT UserID, Email, Username, PasswordHash
-            FROM Users
-            WHERE Email = :email AND IsActive = 1
-        """)
 
-        with engine.connect() as conn:
-            row = conn.execute(sql, {"email": email}).fetchone()
+        query = f"""
+        SELECT userid, email, username, passwordhash
+        FROM `{USERS_TABLE}`
+        WHERE email = @email AND isactive = TRUE
+        LIMIT 1
+        """
 
-            if not row:
-                return None
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email)
+            ]
+        )
 
-            user = dict(row._mapping)
+        result = client.query(query, job_config=job_config).result()
+        rows = [dict(row) for row in result]
 
-            if not AuthService.verify_password(password, user["PasswordHash"]):
-                return None
+        if not rows:
+            return None
 
-            return {
-                "user_id": user["UserID"],
-                "email": user["Email"],
-                "username": user["Username"]
-            }
+        user = rows[0]
+
+        if not AuthService.verify_password(password, user["passwordhash"]):
+            return None
+
+        return {
+            "user_id": user["userid"],
+            "email": user["email"],
+            "username": user["username"]
+        }
