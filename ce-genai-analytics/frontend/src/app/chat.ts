@@ -100,7 +100,7 @@ export class ChatComponent implements OnInit {
     });
     
 
-    const url = `http://localhost:8000/chat/stream?${params.toString()}`;
+    const url = `/api/chat/stream?${params.toString()}`;
     const es = new EventSource(url);
 
     let hasReceivedValidEvent = false;
