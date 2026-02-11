@@ -1,0 +1,131 @@
+<div class="admin-page">
+  <header class="admin-header">
+    <button class="back-btn" (click)="goToChat()">Back to Chat</button>
+    <div class="header-title">
+      <div class="title">Admin Console</div>
+      <div class="subtitle">User Management</div>
+    </div>
+    <div class="profile-area">
+      <button class="profile-icon" (click)="toggleProfileMenu()">
+        {{ username ? (username[0] | uppercase) : 'U' }}
+      </button>
+      <div class="profile-menu" *ngIf="showProfileMenu">
+        <button (click)="goToChat()">Go to Chat</button>
+        <button (click)="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="admin-container">
+    <div class="toolbar">
+      <button class="add-btn" (click)="showAddForm = !showAddForm">
+        + Add User
+      </button>
+      <div class="status-inline" *ngIf="loading">Loading users...</div>
+      <div class="status-error" *ngIf="loadError">{{ loadError }}</div>
+    </div>
+
+    <div *ngIf="showAddForm" class="card" autocomplete="off">
+      <div class="form-grid">
+        <div class="field">
+          <label>Email</label>
+          <input [(ngModel)]="newUser.email" placeholder="user@company.com" autocomplete="off" name="newEmail">
+        </div>
+        <div class="field">
+          <label>Username</label>
+          <input [(ngModel)]="newUser.username" placeholder="username" autocomplete="off" name="newUsername">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <div class="password-row">
+            <input [(ngModel)]="newUser.password" [type]="addPasswordVisible ? 'text' : 'password'" placeholder="Set a temp password" autocomplete="new-password" name="newPassword">
+            <button type="button" class="eye-btn" (click)="addPasswordVisible = !addPasswordVisible">
+              {{ addPasswordVisible ? 'Hide' : 'Show' }}
+            </button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select [(ngModel)]="newUser.role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="save-btn" (click)="createUser()" [disabled]="creating">
+          <span *ngIf="creating" class="inline-spinner" aria-hidden="true"></span>
+          {{ creating ? 'Creating...' : 'Create' }}
+        </button>
+        <button class="cancel-btn" (click)="showAddForm = false" [disabled]="creating">Cancel</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <tr>
+          <th>User ID</th>
+          <th>Email</th>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+
+        <tr *ngFor="let u of users">
+          <td>{{u.UserID}}</td>
+          <td>
+            <span *ngIf="editingId !== u.UserID">{{u.Email}}</span>
+            <input *ngIf="editingId === u.UserID" [(ngModel)]="editUser.email">
+          </td>
+          <td>
+            <span *ngIf="editingId !== u.UserID">{{u.Username}}</span>
+            <input *ngIf="editingId === u.UserID" [(ngModel)]="editUser.username">
+          </td>
+          <td>
+            <span *ngIf="editingId !== u.UserID">{{u.Role}}</span>
+            <select *ngIf="editingId === u.UserID" [(ngModel)]="editUser.role">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </td>
+          <td>
+            <span *ngIf="editingId !== u.UserID" class="status-pill" [class.active]="isActive(u)" [class.inactive]="!isActive(u)">
+              {{ isActive(u) ? 'Active' : 'Inactive' }}
+            </span>
+            <select *ngIf="editingId === u.UserID" [(ngModel)]="editUser.isActive">
+              <option [ngValue]="true">Active</option>
+              <option [ngValue]="false">Inactive</option>
+            </select>
+          </td>
+          <td>
+            <div class="actions">
+              <button *ngIf="editingId !== u.UserID" (click)="startEdit(u)" [disabled]="updatingId !== null || deletingId !== null">Edit</button>
+              <button *ngIf="editingId !== u.UserID" class="danger" (click)="deleteUser(u.UserID)" [disabled]="updatingId !== null || deletingId !== null">
+                <span *ngIf="deletingId === u.UserID" class="inline-spinner" aria-hidden="true"></span>
+                {{ deletingId === u.UserID ? 'Deleting...' : 'Delete' }}
+              </button>
+
+              <button *ngIf="editingId === u.UserID" class="save-btn" (click)="saveEdit(u.UserID)" [disabled]="updatingId === u.UserID">
+                <span *ngIf="updatingId === u.UserID" class="inline-spinner" aria-hidden="true"></span>
+                {{ updatingId === u.UserID ? 'Saving...' : 'Save' }}
+              </button>
+              <button *ngIf="editingId === u.UserID" class="cancel-btn" (click)="cancelEdit()" [disabled]="updatingId === u.UserID">Cancel</button>
+            </div>
+            <div class="reset-row" *ngIf="editingId === u.UserID">
+              <div class="password-row">
+                <input [(ngModel)]="editUser.password" [type]="editPasswordVisible ? 'text' : 'password'" placeholder="Reset password" autocomplete="new-password" name="resetPassword">
+                <button type="button" class="eye-btn" (click)="editPasswordVisible = !editPasswordVisible">
+                  {{ editPasswordVisible ? 'Hide' : 'Show' }}
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+

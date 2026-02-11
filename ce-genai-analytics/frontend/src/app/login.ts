@@ -24,10 +24,11 @@ export class LoginComponent {
     fetch('http://localhost:8000/auth/check', {
       headers: { Authorization: `Basic ${token}` }
     })
-      .then(res => {
+      .then(async res => {
         if (!res.ok) throw new Error();
+        const data = await res.json();
         this.loginError = false;
-        this.auth.setLoggedIn(this.username, token);
+        this.auth.setLoggedIn(this.username, token, data.user.role);
         this.router.navigate(['/app']);
       })
       .catch(() => {

@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.chat_stream import router as chat_stream_router
 from app.auth import get_current_user
+from app.admin import router as admin_router
 
 app = FastAPI()
 
@@ -18,3 +19,4 @@ def auth_check(user: str = Depends(get_current_user)):
     return {"status": "ok", "user": user}
 
 app.include_router(chat_stream_router)
+app.include_router(admin_router)

@@ -11,6 +11,7 @@
   </div>
   <!-- Dropdown -->
   <div class="profile-menu" *ngIf="showProfileMenu">
+    <button *ngIf="isAdmin()" (click)="goToAdmin()">👥 Manage Users</button>
     <button (click)="logout()">Logout</button>
   </div>
 </div>

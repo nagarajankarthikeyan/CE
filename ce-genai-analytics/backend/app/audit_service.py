@@ -41,6 +41,14 @@ class AuditService:
 
     @staticmethod
     def log_audit_event(**data):
+        # Ensure AuditID is always populated.
+        try:
+            q = f"SELECT IFNULL(MAX(CAST(AuditID AS INT64)), 0) + 1 AS next_id FROM `{AUDIT_TABLE}`"
+            next_id = list(client.query(q).result())[0]["next_id"]
+            data["AuditID"] = int(next_id)
+        except Exception as ex:
+            print("AuditID generation failed:", ex)
+            data["AuditID"] = None
 
         # Always set created timestamp
         data["CreatedAt"] = datetime.utcnow()

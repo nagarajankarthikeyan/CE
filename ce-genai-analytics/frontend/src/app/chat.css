@@ -377,6 +377,7 @@ button:disabled {
   cursor: pointer;
   width: 100%;
   transition: all 0.25s ease;
+  margin-bottom: 10px;
 }
 
 .profile-menu button:hover {
