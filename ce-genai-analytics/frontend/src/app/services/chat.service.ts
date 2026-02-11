@@ -4,7 +4,7 @@ import { Injectable } from '@angular/core';
 export class ChatService {
 
   async streamChat(message: string, onToken: (chunk: string) => void) {
-    const response = await fetch('http://localhost:8000/chat/stream', {
+    const response = await fetch('/api/chat/stream', {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })
@@ -25,7 +25,7 @@ export class ChatService {
   }
 
   streamChatSSE(message: string, onToken: (chunk: string) => void) {
-  const url = `http://localhost:8000/chat/stream?message=${encodeURIComponent(message)}`;
+  const url = `/api/chat/stream?message=${encodeURIComponent(message)}`;
   const es = new EventSource(url);
 
   es.onmessage = (event) => {

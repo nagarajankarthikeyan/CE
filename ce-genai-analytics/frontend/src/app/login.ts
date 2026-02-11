@@ -21,7 +21,7 @@ export class LoginComponent {
   login() {
     const token = btoa(`${this.username}:${this.password}`);
 
-    fetch('http://localhost:8000/auth/check', {
+    fetch('/api/auth/check', {
       headers: { Authorization: `Basic ${token}` }
     })
       .then(async res => {
