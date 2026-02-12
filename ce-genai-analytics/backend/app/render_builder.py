@@ -65,32 +65,29 @@ def is_percent_column(col_name: str) -> bool:
 # Formatting
 # =========================
 
-def format_value(val, col_name: str = "", question: str = ""):
-    try:
-        if not isinstance(val, (int, float)):
-            return prettify_value(val)
+def format_value(val, col_name: str = ""):
 
-        col_lower = (col_name or "").lower()
-        q_lower = (question or "").lower()
+    if val is None:
+        return val
 
-        # Detect percent
-        if is_percent_column(col_name):
-            return f"{round(float(val), 2)}%"
+    # Percent
+    if is_percent_column(col_name) and isinstance(val, (int, float)):
+        return f"{round(float(val), 2)}%"
 
-        # Detect currency from column OR question
-        currency_keywords = ["spend", "cost", "revenue", "expense", "media"]
-        if any(k in col_lower for k in currency_keywords) or \
-           any(k in q_lower for k in currency_keywords):
-            return f"${float(val):,.2f}"
+    # Currency (ONLY if column name matches)
+    if is_currency_column(col_name) and isinstance(val, (int, float)):
+        return f"${float(val):,.2f}"
 
-        # Normal numeric formatting
-        if float(val).is_integer():
-            return int(val)
-
+    # Plain numbers (NO currency)
+    if isinstance(val, (int, float)):
         return round(float(val), 2)
 
-    except:
-        return val
+    # Strings
+    if isinstance(val, str):
+        return prettify_value(val)
+
+    return val
+
 
 
 
@@ -133,7 +130,7 @@ def build_render_spec(question: str, rows: list):
             "title": question,
             "kpis": [{
                 "label": prettify_label(key),
-                "value": format_value(rows[0][key], key, question)
+                "value": format_value(rows[0][key], key)
             }],
             "table": {"columns": [], "rows": []},
             "chart": {},
@@ -159,7 +156,7 @@ def build_render_spec(question: str, rows: list):
             y_numeric = [round_numeric(r[c2]) for r in rows]
 
             # 🔥 IMPORTANT: currency formatting preserved here
-            y_formatted = [format_value(r[c2], c2, question) for r in rows]
+            y_formatted = [format_value(r[c2], c2) for r in rows]
 
             return {
                 "render_type": "chart",
@@ -168,7 +165,7 @@ def build_render_spec(question: str, rows: list):
                 "table": {
                     "columns": [prettify_label(c1), prettify_label(c2)],
                     "rows": [
-                        [prettify_value(r[c1]), format_value(r[c2], c2, question)]
+                        [prettify_value(r[c1]), format_value(r[c2], c2)]
                         for r in rows
                     ]
                 },
@@ -197,7 +194,7 @@ def build_render_spec(question: str, rows: list):
                 raw_val = round_numeric(r.get(metric))
                 ranked.append({
                     "label": prettify_value(r.get(dim)),
-                    "value": format_value(raw_val, metric, question),
+                    "value": format_value(raw_val, metric),
                     "_raw_value": raw_val
                 })
 
@@ -234,7 +231,7 @@ def build_render_spec(question: str, rows: list):
             if is_numeric(val):
                 kpis.append({
                     "label": prettify_label(col),
-                    "value": format_value(val, col, question)
+                    "value": format_value(val, col)
                 })
 
         return {
@@ -244,7 +241,7 @@ def build_render_spec(question: str, rows: list):
             "table": {
                 "columns": [prettify_label(c) for c in columns],
                 "rows": [
-                    [format_value(r.get(c), c, question) for c in columns]
+                    [format_value(r.get(c), c) for c in columns]
                     for r in rows[:10]
                 ]
             },
@@ -264,7 +261,7 @@ def build_render_spec(question: str, rows: list):
         "table": {
             "columns": [prettify_label(c) for c in columns],
             "rows": [
-                [format_value(r.get(c), c, question) for c in columns]
+                [format_value(r.get(c), c) for c in columns]
                 for r in rows
             ]
         },
