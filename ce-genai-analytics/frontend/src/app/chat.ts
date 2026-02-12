@@ -31,12 +31,13 @@ export class ChatComponent implements OnInit {
   hasStarted = false;
   isStreaming = false;
   streamingText = '';
-
+  lastUserMessage = '';
   conversationId = this.generateConversationId();
 
   showProfileMenu = false;
 
   messages: any[] = [];
+  role = '';
   currentRender: any = null;
 
   @ViewChild('chatWindow') chatWindow!: ElementRef;
@@ -58,10 +59,18 @@ export class ChatComponent implements OnInit {
   ngOnInit() {
     this.username = this.auth.getUsername();
     this.authToken = this.auth.getToken();
+    this.role = this.auth.getRole();
 
     if (!this.auth.isLoggedIn()) {
       this.router.navigate(['/login']);
     }
+  }
+  goToAdmin() {
+    this.router.navigate(['/admin']);
+    this.showProfileMenu = false;
+  }
+  isAdmin(): boolean {
+    return this.role === 'admin';
   }
 
   logout() {
@@ -79,7 +88,7 @@ export class ChatComponent implements OnInit {
     if (!this.hasStarted) this.hasStarted = true;
 
     const userMsg = this.message.trim();
-
+    this.lastUserMessage = userMsg;
     this.messages.push({
       role: 'user',
       text: userMsg
@@ -191,11 +200,16 @@ export class ChatComponent implements OnInit {
       this.zone.run(() => {
         try {
           const renderSpec = JSON.parse(e.data);
-          this.currentRender = renderSpec; // 🔥 IMPORTANT
-          this.messages.push({
-            role: 'bot',
-            render: renderSpec
-          });
+            const title = typeof renderSpec?.title === 'string' ? renderSpec.title.trim() : '';
+            const last = this.lastUserMessage.trim();
+            if (title && last && title.toLowerCase() === last.toLowerCase()) {
+              delete renderSpec.title;
+            }
+
+            this.messages.push({
+              role: 'bot',
+              render: renderSpec
+            });
           this.isStreaming = false;
           this.cd.detectChanges();
           this.scrollToBottom();
@@ -264,6 +278,7 @@ export class ChatComponent implements OnInit {
     es.close();
 
     if (this.streamingText.trim()) {
+      
       this.messages.push({
         role: 'bot',
         text: this.streamingText

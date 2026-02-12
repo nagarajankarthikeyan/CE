@@ -57,7 +57,7 @@ class AuthService:
     def authenticate_user(email: str, password: str) -> Optional[dict]:
 
         query = f"""
-        SELECT userid, email, username, passwordhash
+        SELECT userid, email, username, passwordhash, role
         FROM `{USERS_TABLE}`
         WHERE email = @email AND isactive = TRUE
         LIMIT 1
@@ -83,5 +83,6 @@ class AuthService:
         return {
             "user_id": user["userid"],
             "email": user["email"],
-            "username": user["username"]
+            "username": user["username"],
+            "role": user.get("role", "user")
         }

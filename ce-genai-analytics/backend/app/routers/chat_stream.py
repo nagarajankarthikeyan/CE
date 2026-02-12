@@ -135,7 +135,7 @@ async def chat_stream(
         # Audit state - collect data without logging yet
         audit_data = {
             "conversationid": conversation_id,
-            # "user_id": user_id,
+            "userid": user_id,
             "endpoint": endpoint,
             "httpmethod": method,
             "usermessage": message[:2000],
