@@ -58,7 +58,7 @@ export class AdminComponent implements OnInit {
   loadUsers() {
     this.loading = true;
     this.loadError = '';
-    this.http.get<any[]>('http://localhost:8000/admin/users', this.getAuthHeaders())
+    this.http.get<any[]>('/api/admin/users', this.getAuthHeaders())
       .pipe(
         timeout(8000),
         catchError(err => {
@@ -80,7 +80,7 @@ export class AdminComponent implements OnInit {
   createUser() {
     if (this.creating) return;
     this.creating = true;
-    this.http.post('http://localhost:8000/admin/users', this.newUser, this.getAuthHeaders())
+    this.http.post('/api/admin/users', this.newUser, this.getAuthHeaders())
       .pipe(
         finalize(() => {
           this.creating = false;
@@ -131,7 +131,7 @@ export class AdminComponent implements OnInit {
       payload.password = this.editUser.password;
     }
 
-    this.http.put(`http://localhost:8000/admin/users/${userId}`, payload, this.getAuthHeaders())
+    this.http.put(`/api/admin/users/${userId}`, payload, this.getAuthHeaders())
       .pipe(
         finalize(() => {
           this.updatingId = null;
@@ -151,7 +151,7 @@ export class AdminComponent implements OnInit {
 
   toggleActive(user: any) {
     this.http.put(
-      `http://localhost:8000/admin/users/${user.UserID}/status?is_active=${!user.IsActive}`,
+      `/api/admin/users/${user.UserID}/status?is_active=${!user.IsActive}`,
       {},
       this.getAuthHeaders()
     ).subscribe(() => this.loadUsers());
@@ -161,7 +161,7 @@ export class AdminComponent implements OnInit {
     if (this.deletingId !== null) return;
     if (!confirm('Delete this user?')) return;
     this.deletingId = id;
-    this.http.delete(`http://localhost:8000/admin/users/${id}`, this.getAuthHeaders())
+    this.http.delete(`/api/admin/users/${id}`, this.getAuthHeaders())
       .pipe(
         finalize(() => {
           this.deletingId = null;
