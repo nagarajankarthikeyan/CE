@@ -40,55 +40,61 @@ def prettify_value(val):
 # Semantic Detection
 # =========================
 
-def is_currency_column(col_name: str) -> bool:
-    if not col_name:
+def looks_like_currency(val):
+    if not isinstance(val, (int, float)):
         return False
 
-    name = col_name.lower()
-    keywords = [
-        "spend", "cost", "amount", "revenue",
-        "budget", "price", "sales", "value"
-    ]
-    return any(k in name for k in keywords)
+    v = float(val)
 
-
-def is_percent_column(col_name: str) -> bool:
-    if not col_name:
+    # Ignore small integers like 1, 4 (quarter)
+    if float(v).is_integer():
         return False
 
-    name = col_name.lower()
-    keywords = ["ctr", "rate", "percent", "percentage"]
-    return any(k in name for k in keywords)
+    # Currency often > 1 and has decimals
+    if v > 1 and round(v, 2) != round(v, 0):
+        return True
+
+    return False
+
+
+
+def looks_like_percent(val):
+    if not isinstance(val, (int, float)):
+        return False
+
+    # Between 0 and 100 but not a whole number like year/quarter
+    if 0 <= float(val) <= 100 and not float(val).is_integer():
+        return True
+
+    return False
+
+
 
 
 # =========================
 # Formatting
 # =========================
 
-def format_value(val, col_name: str = ""):
+def format_value(val, col_name="", col_format="default"):
+    try:
+        if col_format == "percent":
+            return f"{round(float(val), 2)}%"
 
-    if val is None:
+        if col_format == "currency":
+            return f"${round(float(val), 2):,.2f}"
+
+        if isinstance(val, (int, float)):
+            if float(val).is_integer():
+                return int(val)
+            return round(float(val), 2)
+
+        if isinstance(val, str):
+            return val.replace("_", " ").strip()
+
         return val
 
-    # Percent
-    if is_percent_column(col_name) and isinstance(val, (int, float)):
-        return f"{round(float(val), 2)}%"
-
-    # Currency (ONLY if column name matches)
-    if is_currency_column(col_name) and isinstance(val, (int, float)):
-        return f"${float(val):,.2f}"
-
-    # Plain numbers (NO currency)
-    if isinstance(val, (int, float)):
-        return round(float(val), 2)
-
-    # Strings
-    if isinstance(val, str):
-        return prettify_value(val)
-
-    return val
-
-
+    except:
+        return val
 
 
 def round_numeric(val):
@@ -120,6 +126,13 @@ def build_render_spec(question: str, rows: list):
 
     columns = list(rows[0].keys())
 
+    column_formats = {
+    col: detect_column_format(rows, col)
+    for col in columns
+}
+
+
+
     # =========================
     # 1. KPI
     # =========================
@@ -130,7 +143,7 @@ def build_render_spec(question: str, rows: list):
             "title": question,
             "kpis": [{
                 "label": prettify_label(key),
-                "value": format_value(rows[0][key], key)
+                "value": format_value(rows[0][key], key, column_formats.get(0))
             }],
             "table": {"columns": [], "rows": []},
             "chart": {},
@@ -155,8 +168,8 @@ def build_render_spec(question: str, rows: list):
 
             y_numeric = [round_numeric(r[c2]) for r in rows]
 
-            # 🔥 IMPORTANT: currency formatting preserved here
-            y_formatted = [format_value(r[c2], c2) for r in rows]
+            # IMPORTANT: currency formatting preserved here
+            y_formatted = [format_value(r[c2], c2, column_formats.get(c2)) for r in rows]
 
             return {
                 "render_type": "chart",
@@ -165,7 +178,7 @@ def build_render_spec(question: str, rows: list):
                 "table": {
                     "columns": [prettify_label(c1), prettify_label(c2)],
                     "rows": [
-                        [prettify_value(r[c1]), format_value(r[c2], c2)]
+                        [prettify_value(r[c1]), format_value(r[c2], c2, column_formats.get(c2))]
                         for r in rows
                     ]
                 },
@@ -182,19 +195,31 @@ def build_render_spec(question: str, rows: list):
             }
 
     # =========================
-    # 3. Ranking → Bar Chart
+    # 3. Ranking (ONLY if exactly 2 columns)
     # =========================
     if len(columns) == 2:
-        dim, metric = columns
+        dim = columns[0]
+        metric = columns[1]
 
         if is_numeric(rows[0].get(metric)):
 
+            column_formats = {
+                col: detect_column_format(rows, col)
+                for col in columns
+            }
+
             ranked = []
+
             for r in rows:
-                raw_val = round_numeric(r.get(metric))
+                raw_val = r.get(metric)
+
                 ranked.append({
-                    "label": prettify_value(r.get(dim)),
-                    "value": format_value(raw_val, metric),
+                    "label": prettify_value(str(r.get(dim))),
+                    "value": format_value(
+                        raw_val,
+                        metric,
+                        column_formats.get(metric, "default")
+                    ),
                     "_raw_value": raw_val
                 })
 
@@ -209,16 +234,32 @@ def build_render_spec(question: str, rows: list):
                     "type": "bar",
                     "x": [r["label"] for r in ranked],
                     "y": [r["_raw_value"] for r in ranked],
-                    "y_formatted": [r["value"] for r in ranked],
+                    "y_formatted": [
+                        format_value(
+                            r["_raw_value"],
+                            metric,
+                            column_formats.get(metric, "default")
+                        )
+                        for r in ranked
+                    ],
                     "series": []
                 },
                 "ranked_list": [
-                    {"label": r["label"], "value": r["value"]}
+                    {
+                        "label": r["label"],
+                        "value": format_value(
+                            r["_raw_value"],
+                            metric,
+                            column_formats.get(metric, "default")
+                        )
+                    }
                     for r in ranked
                 ],
                 "bullets": [],
                 "narrative": ""
             }
+
+
 
     # =========================
     # 4. Mixed Summary
@@ -231,7 +272,7 @@ def build_render_spec(question: str, rows: list):
             if is_numeric(val):
                 kpis.append({
                     "label": prettify_label(col),
-                    "value": format_value(val, col)
+                    "value": format_value(val, col, column_formats.get(col))
                 })
 
         return {
@@ -241,7 +282,7 @@ def build_render_spec(question: str, rows: list):
             "table": {
                 "columns": [prettify_label(c) for c in columns],
                 "rows": [
-                    [format_value(r.get(c), c) for c in columns]
+                    [format_value(r.get(c), c, column_formats.get(c)) for c in columns]
                     for r in rows[:10]
                 ]
             },
@@ -261,7 +302,7 @@ def build_render_spec(question: str, rows: list):
         "table": {
             "columns": [prettify_label(c) for c in columns],
             "rows": [
-                [format_value(r.get(c), c) for c in columns]
+                [format_value(r.get(c), c, column_formats.get(c)) for c in columns]
                 for r in rows
             ]
         },
@@ -284,3 +325,63 @@ def is_summary_question(q: str):
         "how did", "what happened"
     ]
     return any(k in q for k in keywords)
+
+# =========================
+# Analyze column
+# =========================
+def analyze_column(rows, column):
+    """
+    Analyze numeric distribution of a column.
+    Returns metadata about the column.
+    """
+    values = []
+
+    for r in rows:
+        v = r.get(column)
+        if isinstance(v, (int, float)):
+            values.append(float(v))
+
+    if not values:
+        return {"type": "non_numeric"}
+
+    min_val = min(values)
+    max_val = max(values)
+    avg_val = sum(values) / len(values)
+
+    # Year detection
+    if all(1900 <= int(v) <= 2100 for v in values):
+        return {"type": "year"}
+
+    # Percentage detection (0–100 range)
+    if 0 <= min_val and max_val <= 100:
+        return {"type": "percentage"}
+
+    # Currency detection:
+    # Large magnitude and decimals present
+    has_decimals = any(not float(v).is_integer() for v in values)
+
+    if max_val > 1000 and has_decimals:
+        return {"type": "currency"}
+
+    return {"type": "number"}
+
+def detect_column_format(rows, column):
+    numeric_values = [
+        r.get(column) for r in rows
+        if isinstance(r.get(column), (int, float))
+    ]
+
+    if not numeric_values:
+        return "default"
+
+    # Percent detection (all values small decimals)
+    if all(0 <= float(v) <= 100 for v in numeric_values) and any(
+        not float(v).is_integer() for v in numeric_values
+    ):
+        return "percent"
+
+    # Currency detection (any value has decimals)
+    if any(not float(v).is_integer() for v in numeric_values):
+        return "currency"
+
+    return "default"
