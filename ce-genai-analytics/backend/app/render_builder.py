@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import math
 
 
 # =========================
@@ -17,7 +18,10 @@ def looks_like_date(val):
 
 def is_numeric(v):
     try:
-        return v is not None and float(v) == float(v)
+        if v is None:
+            return False
+        n = float(v)
+        return not math.isnan(n) and not math.isinf(n)
     except:
         return False
 
@@ -77,16 +81,31 @@ def looks_like_percent(val):
 
 def format_value(val, col_name="", col_format="default"):
     try:
+        if is_numeric(val):
+            n = float(val)
+
+            if col_format == "year":
+                return str(int(n))
+
+            if col_format == "percent":
+                # Treat ratio values as percentages (0.056 -> 5.60%)
+                pct = n * 100 if 0 <= abs(n) <= 1 else n
+                return f"{pct:,.2f}%"
+
+            if col_format == "currency":
+                return f"${n:,.2f}"
+
+            if float(n).is_integer():
+                return f"{int(n):,}"
+            return f"{n:,.2f}"
+
         if col_format == "percent":
-            return f"{round(float(val), 2)}%"
+            n = float(val)
+            pct = n * 100 if 0 <= abs(n) <= 1 else n
+            return f"{pct:,.2f}%"
 
         if col_format == "currency":
-            return f"${round(float(val), 2):,.2f}"
-
-        if isinstance(val, (int, float)):
-            if float(val).is_integer():
-                return int(val)
-            return round(float(val), 2)
+            return f"${float(val):,.2f}"
 
         if isinstance(val, str):
             return val.replace("_", " ").strip()
@@ -99,7 +118,7 @@ def format_value(val, col_name="", col_format="default"):
 
 def round_numeric(val):
     try:
-        if isinstance(val, (int, float)):
+        if is_numeric(val):
             return round(float(val), 2)
         return val
     except:
@@ -143,7 +162,7 @@ def build_render_spec(question: str, rows: list):
             "title": question,
             "kpis": [{
                 "label": prettify_label(key),
-                "value": format_value(rows[0][key], key, column_formats.get(0))
+                "value": format_value(rows[0][key], key, column_formats.get(key))
             }],
             "table": {"columns": [], "rows": []},
             "chart": {},
@@ -366,22 +385,29 @@ def analyze_column(rows, column):
     return {"type": "number"}
 
 def detect_column_format(rows, column):
-    numeric_values = [
-        r.get(column) for r in rows
-        if isinstance(r.get(column), (int, float))
-    ]
+    numeric_values = []
+    for r in rows:
+        v = r.get(column)
+        if is_numeric(v):
+            numeric_values.append(float(v))
 
     if not numeric_values:
         return "default"
 
-    # Percent detection (all values small decimals)
-    if all(0 <= float(v) <= 100 for v in numeric_values) and any(
-        not float(v).is_integer() for v in numeric_values
-    ):
+    all_integers = all(float(v).is_integer() for v in numeric_values)
+    if all_integers and all(1900 <= int(v) <= 2100 for v in numeric_values):
+        return "year"
+
+    has_fraction = any(not float(v).is_integer() for v in numeric_values)
+    all_between_0_1 = all(0 <= v <= 1 for v in numeric_values)
+    any_over_100 = any(v > 100 for v in numeric_values)
+
+    # Ratio-like metrics are percentages.
+    if has_fraction and all_between_0_1:
         return "percent"
 
-    # Currency detection (any value has decimals)
-    if any(not float(v).is_integer() for v in numeric_values):
+    # Decimal values with larger magnitude are monetary-like metrics.
+    if has_fraction and any_over_100:
         return "currency"
 
     return "default"

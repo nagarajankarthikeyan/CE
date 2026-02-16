@@ -18,6 +18,11 @@ CRITICAL RULES:
 - DO NOT explain
 - Only SELECT or WITH + SELECT
 - Table name: {TABLE_NAME}
+- Do NOT invent new metrics.
+- Only use columns that exist in schema.
+- Do NOT redefine conversions.
+- If user asks for performance, return spend, clicks, impressions, and CTR only.
+
 
 DATA RULES:
 - Columns are already structured (NOT JSON)

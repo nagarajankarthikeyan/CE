@@ -7,6 +7,7 @@ from app.sql_normalizer import normalize_sql
 from app.sql_validator import validate_sql
 from app.executor import execute_sql
 from app.narrator import narrate
+from app.value_semantic_resolver import normalize_sql_value_semantics
 
 # =========================
 # Router MUST be defined BEFORE decorators
@@ -29,6 +30,7 @@ def chat(req: ChatRequest):
 
         # 3. Normalize markdown fences
         sql = normalize_sql(raw_sql)
+        sql = normalize_sql_value_semantics(sql, json_fields)
 
         # 4. Validate SQL
         validate_sql(sql)

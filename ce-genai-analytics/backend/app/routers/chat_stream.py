@@ -23,9 +23,43 @@ import base64
 from fastapi import HTTPException
 from app.auth_service import AuthService
 
+from app.value_semantic_resolver import extract_platform, normalize_sql_value_semantics
+from app.filter_resolver import resolve_filters
+from app.session_memory import (
+    store_session_filters,
+    get_session_filters,
+    extract_filters_from_sql,
+)
+
 router = APIRouter()
 
+
 GENERIC_BLOCK_MSG = "I can't perform that action that change system data. I can help with data analysis and retrieval."
+
+def inject_condition(sql: str, condition: str) -> str:
+    """
+    Safely inject WHERE conditions.
+    Handles:
+    - No WHERE
+    - Existing WHERE
+    - Dangling WHERE
+    - Trailing AND
+    """
+
+    sql = sql.strip().rstrip(";")
+
+    # Remove broken WHERE at end
+    sql = re.sub(r"\bWHERE\s*$", "", sql, flags=re.IGNORECASE)
+
+    # Remove trailing AND
+    sql = re.sub(r"\bAND\s*$", "", sql, flags=re.IGNORECASE)
+
+    if re.search(r"\bwhere\b", sql, re.IGNORECASE):
+        return f"{sql} AND {condition}"
+    else:
+        return f"{sql} WHERE {condition}"
+
+
 
 def check_forbidden_intent(message: str):
     """Check if the user's message contains forbidden operations"""
@@ -90,6 +124,64 @@ def check_forbidden_intent(message: str):
 
 def event(fn: str, stage: str, etype: str) -> str:
     return f"{fn}:{stage}:{etype}"
+
+
+def is_follow_up_message(message: str) -> bool:
+    msg = message.lower().strip()
+    follow_up_patterns = [
+        r"^(what about)\b",
+        r"^(how about)\b",
+        r"^and\b",
+        r"^also\b",
+        r"^same\b",
+        r"^instead\b",
+        r"^(that|those|it|them)\b",
+        r"^again\b",
+        r"\b(this|that|it|them)\s+(number|value|result|metric|spend|cost)\b",
+        r"^(break|split|group|bucket|show)\s+(this|that|it|them)\b",
+        r"^(break|split|group|bucket)\b.*\b(this|that|it|them)\b.*\bby\b",
+    ]
+    return any(re.search(p, msg) for p in follow_up_patterns)
+
+
+def is_temporal_follow_up_message(message: str) -> bool:
+    msg = message.lower().strip()
+    # Short temporal refinements that usually depend on previous context.
+    patterns = [
+        r"^(in|for)\s+q[1-4]\b",
+        r"^(in|for)\s+\d{4}\b",
+        r"^(in|for)\s+(today|yesterday|this|last)\b",
+        r"^(today|yesterday|this|last)\b",
+    ]
+    return any(re.search(p, msg) for p in patterns)
+
+
+def is_temporal_condition(condition: str) -> bool:
+    c = condition.lower()
+    temporal_patterns = [
+        r"\bdate\b",
+        r"\bcurrent_date\(",
+        r"\bdate_sub\(",
+        r"\bextract\s*\(\s*(year|quarter|month|week|day)",
+        r"\bbetween\b",
+        r"\bq[1-4]\b",
+        r"\b\d{4}\b",
+    ]
+    return any(re.search(p, c) for p in temporal_patterns)
+
+
+def dedupe_conditions(conditions: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for c in conditions:
+        key = c.strip()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 @router.get("/chat/stream")
 async def chat_stream(
@@ -174,16 +266,66 @@ async def chat_stream(
                 yield f"event: validation_error\ndata: {json.dumps(err)}\n\n"
                 return
 
-            # Generate SQL
+            # ----------------------------------
+            # 1. Generate base SQL
+            # ----------------------------------
             json_fields = get_json_schema()
-            result = generate_sql(message, json_fields)
+            platform, cleaned_message = extract_platform(message)
 
-            if isinstance(result, dict):
-                sql = result.get("sql")
-                intent_type = result.get("intent_type")
-            else:
-                sql = result
-                intent_type = None
+            sql = generate_sql(cleaned_message, json_fields)
+            sql = normalize_sql_value_semantics(sql, json_fields)
+
+            # ----------------------------------
+            # 2. Collect filters
+            # ----------------------------------
+            new_filters = resolve_filters(message, json_fields)
+            previous_filters = get_session_filters(user_id, conversation_id)
+            current_sql_filters = extract_filters_from_sql(sql)
+            has_non_temporal_sql_filters = any(
+                not is_temporal_condition(c) for c in current_sql_filters
+            )
+
+            conditions = []
+
+            # Reuse session filters only for explicit follow-up/contextual turns.
+            if (
+                not new_filters
+                and previous_filters
+                and (
+                    is_follow_up_message(message)
+                    or (is_temporal_follow_up_message(message) and not has_non_temporal_sql_filters)
+                )
+            ):
+                conditions.extend(previous_filters)
+
+            # Add new filters
+            for f in new_filters:
+                column = f["column"]
+                value = f["value"]
+                raw = f.get("raw", False)
+
+                if raw:
+                    if value is None or str(value).strip() == "":
+                        conditions.append(f"{column}")
+                    else:
+                        conditions.append(f"{column} = {value}")
+                else:
+                    conditions.append(f"{column} = '{value}'")
+
+            # ----------------------------------
+            # 3. Inject filters safely
+            # ----------------------------------
+            if conditions:
+                conditions = dedupe_conditions(conditions)
+                sql = inject_filters_safely(sql, conditions)
+
+            # ----------------------------------
+            # 4. Store filters for next turn
+            # ----------------------------------
+            final_conditions = dedupe_conditions(extract_filters_from_sql(sql))
+            if final_conditions:
+                store_session_filters(user_id, conversation_id, final_conditions)
+
 
 
             audit_data["generatedsql"] = sql[:4000]
@@ -310,3 +452,41 @@ def json_safe(obj):
     if isinstance(obj, (date, datetime)):
         return obj.isoformat()
     return str(obj)
+
+
+import re
+
+def inject_filters_safely(sql: str, conditions):
+
+    if not conditions:
+        return sql
+
+    if isinstance(conditions, str):
+        conditions = [conditions]
+
+    if not isinstance(sql, str):
+        raise ValueError(f"SQL must be string, got {type(sql)}")
+
+    sql = sql.strip().rstrip(";")
+
+    split_match = re.search(
+        r"\b(GROUP BY|ORDER BY|LIMIT)\b",
+        sql,
+        re.IGNORECASE
+    )
+
+    base_sql = sql
+    tail_sql = ""
+
+    if split_match:
+        base_sql = sql[:split_match.start()]
+        tail_sql = sql[split_match.start():]
+
+    if re.search(r"\bWHERE\b", base_sql, re.IGNORECASE):
+        base_sql += "\nAND " + "\nAND ".join(conditions)
+    else:
+        base_sql += "\nWHERE " + "\nAND ".join(conditions)
+
+    return (base_sql + "\n" + tail_sql).strip()
+
+
