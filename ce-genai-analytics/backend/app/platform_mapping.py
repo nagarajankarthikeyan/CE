@@ -31,6 +31,9 @@ PLATFORM_SYNONYMS = {
     # --- DV360 / Programmatic ---
     "dv360": "DV360",
     "display & video 360": "DV360",
+    "display and video 360": "DV360",
+    "display video 360": "DV360",
+    "display/video 360": "DV360",
     "google dv360": "DV360",
     "programmatic": "DV360",
     "programmatic display": "DV360",

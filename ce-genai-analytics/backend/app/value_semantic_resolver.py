@@ -5,8 +5,15 @@ def extract_platform(message: str):
     msg_lower = message.lower()
     canonical, matched_phrase = find_platform_match(msg_lower)
     if canonical and matched_phrase:
-        # remove matched phrase from message
-        cleaned_message = re.sub(rf"\b{re.escape(matched_phrase)}\b", "", msg_lower, flags=re.IGNORECASE).strip()
+        # Remove matched phrase robustly even when separators differ
+        # (e.g., "display & video 360" vs "display video 360").
+        phrase_tokens = [t for t in re.split(r"\s+", matched_phrase.strip()) if t]
+        if phrase_tokens:
+            tolerant_pattern = r"\b" + r"\W+".join(re.escape(t) for t in phrase_tokens) + r"\b"
+            cleaned_message = re.sub(tolerant_pattern, "", msg_lower, flags=re.IGNORECASE)
+        else:
+            cleaned_message = msg_lower
+        cleaned_message = re.sub(rf"\b{re.escape(matched_phrase)}\b", "", cleaned_message, flags=re.IGNORECASE).strip()
         cleaned_message = re.sub(r"\s+", " ", cleaned_message)
         return canonical, cleaned_message
 
