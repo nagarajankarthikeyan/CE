@@ -1,9 +1,8 @@
-
-
 <!-- HEADER -->
 <div class="app-header">
-  <div class="app-title">
-    CE AI Analytics
+  <div class="ce-brand">
+    <img class="ce-logo" src="images/logo/constellation-logo.png" alt="Constellation logo" />
+    
   </div>
 
   <div class="profile-icon" (click)="toggleProfileMenu()">
@@ -11,11 +10,10 @@
   </div>
   <!-- Dropdown -->
   <div class="profile-menu" *ngIf="showProfileMenu">
-    <button *ngIf="isAdmin()" (click)="goToAdmin()">👥 Manage Users</button>
+    <button *ngIf="isAdmin()" (click)="goToAdmin()">Manage Users</button>
     <button (click)="logout()">Logout</button>
   </div>
 </div>
-
 <!-- CHAT WINDOW -->
 <div class="chat-window" #chatWindow>
 
@@ -33,7 +31,11 @@
     </div>
 
     <!-- BOT STRUCTURED -->
-    <div *ngIf="m.role === 'bot' && m.render" class="bubble bot">
+    <div
+      *ngIf="m.role === 'bot' && m.render && ['kpi','mixed','ranked_list','table','chart','narrative'].includes(m.render.render_type)"
+      class="bubble bot"
+      [class.kpi-response]="m.render.render_type === 'kpi'"
+    >
 
       <!-- KPI -->
       <div *ngIf="m.render.render_type === 'kpi'" class="kpi-container">
@@ -95,7 +97,7 @@
             <ng-container *ngIf="r?.label; else simpleRank">
               <strong>{{i + 1}}. {{ r.label }}</strong>
               <span *ngIf="r.value !== undefined">
-                — {{ r.value }}
+                - {{ r.value }}
               </span>
             </ng-container>
 
@@ -158,9 +160,7 @@
         <!-- Simple chart placeholder -->
         <div class="chart-container">
           <div class="chart-row" *ngFor="let x of m.render.chart.x; let i = index">
-            <div class="chart-label">
-              {{ x }}
-            </div>
+            <div class="chart-label">{{ x }}</div>
             <div class="chart-value">
               <div class="chart-bar" [style.width.%]="(m.render.chart.y[i] / maxChartValue(m.render.chart.y)) * 100">
                 {{ m.render.chart.y_formatted?.[i] || m.render.chart.y[i] }}
@@ -210,7 +210,7 @@
 <div class="input-section">
 
   <div class="input-label">
-    Ask any business question about your marketing data
+    Ask a business question about your data
   </div>
 
   <div class="bottom-bar">

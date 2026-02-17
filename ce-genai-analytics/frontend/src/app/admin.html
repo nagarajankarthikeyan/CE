@@ -2,6 +2,10 @@
   <header class="admin-header">
     <button class="back-btn" (click)="goToChat()">Back to Chat</button>
     <div class="header-title">
+      <div class="ce-brand">
+        <img class="ce-logo" src="images/logo/constellation-logo.png" alt="Constellation logo" />
+        
+      </div>
       <div class="title">Admin Console</div>
       <div class="subtitle">User Management</div>
     </div>
@@ -54,11 +58,8 @@
       </div>
 
       <div class="form-actions">
-        <button class="save-btn" (click)="createUser()" [disabled]="creating">
-          <span *ngIf="creating" class="inline-spinner" aria-hidden="true"></span>
-          {{ creating ? 'Creating...' : 'Create' }}
-        </button>
-        <button class="cancel-btn" (click)="showAddForm = false" [disabled]="creating">Cancel</button>
+        <button class="save-btn" (click)="createUser()">Create</button>
+        <button class="cancel-btn" (click)="showAddForm = false">Cancel</button>
       </div>
     </div>
 
@@ -101,17 +102,11 @@
           </td>
           <td>
             <div class="actions">
-              <button *ngIf="editingId !== u.UserID" (click)="startEdit(u)" [disabled]="updatingId !== null || deletingId !== null">Edit</button>
-              <button *ngIf="editingId !== u.UserID" class="danger" (click)="deleteUser(u.UserID)" [disabled]="updatingId !== null || deletingId !== null">
-                <span *ngIf="deletingId === u.UserID" class="inline-spinner" aria-hidden="true"></span>
-                {{ deletingId === u.UserID ? 'Deleting...' : 'Delete' }}
-              </button>
+              <button *ngIf="editingId !== u.UserID" (click)="startEdit(u)">Edit</button>
+              <button *ngIf="editingId !== u.UserID" class="danger" (click)="deleteUser(u.UserID)">Delete</button>
 
-              <button *ngIf="editingId === u.UserID" class="save-btn" (click)="saveEdit(u.UserID)" [disabled]="updatingId === u.UserID">
-                <span *ngIf="updatingId === u.UserID" class="inline-spinner" aria-hidden="true"></span>
-                {{ updatingId === u.UserID ? 'Saving...' : 'Save' }}
-              </button>
-              <button *ngIf="editingId === u.UserID" class="cancel-btn" (click)="cancelEdit()" [disabled]="updatingId === u.UserID">Cancel</button>
+              <button *ngIf="editingId === u.UserID" class="save-btn" (click)="saveEdit(u.UserID)">Save</button>
+              <button *ngIf="editingId === u.UserID" class="cancel-btn" (click)="cancelEdit()">Cancel</button>
             </div>
             <div class="reset-row" *ngIf="editingId === u.UserID">
               <div class="password-row">
@@ -127,5 +122,3 @@
     </div>
   </div>
 </div>
-
-

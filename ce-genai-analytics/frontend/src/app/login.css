@@ -1,36 +1,84 @@
-.login-container {
-  height: 100vh;
+.login-page {
+  min-height: 100vh;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
   align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+}
+
+.login-card {
+  width: min(460px, 100%);
+  background: var(--ce-surface);
+  border: 1px solid var(--ce-border);
+  border-radius: 16px;
+  box-shadow: var(--ce-shadow);
+  padding: 28px;
+  display: grid;
+  gap: 12px;
+}
+
+.login-card .ce-brand {
   justify-content: center;
 }
 
-.login-container h2 {
-  font-size: 24px;
+.login-card h1 {
+  margin: 6px 0 0;
+  font-size: 30px;
+  line-height: 1.2;
+  color: var(--ce-heading);
+  text-align: center;
 }
 
-.login-container button {
-    width: 360px;
-    padding: 12px;
-    font-size: 18px;
-    border-radius: 10px;
-    background-color: #2563eb;
-    color: #ffffff;
-    border: none;
-    cursor: pointer;
-}
-
-.login-container input {
-  width: 360px;
-  padding: 12px;
+.subhead {
+  margin: 0 0 8px;
   font-size: 18px;
-  border-color: #9ca3af;
-  border-radius: 10px;
+  line-height: 1.5;
+  color: var(--ce-text-muted);
+  text-align: center;
 }
 
-.login-container .error {
-  color: #b00000;
-  font-size: 20px;
+.login-card label {
+  font-size: 18px;
+  color: var(--ce-text-muted);
+  margin-top: 4px;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 17px;
+  border: 1px solid var(--ce-border);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--ce-text);
+}
+
+.login-card input:focus {
+  outline: none;
+  border-color: var(--ce-accent-2);
+  box-shadow: 0 0 0 3px rgba(21, 114, 199, 0.16);
+}
+
+.login-card button {
+  margin-top: 8px;
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 19px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--ce-accent), var(--ce-accent-2));
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-card button:hover {
+  filter: brightness(1.03);
+}
+
+.login-card .error {
+  color: #b42318;
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 600;
 }
