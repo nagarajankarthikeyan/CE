@@ -13,10 +13,11 @@ async def stream_chat_completion(prompt: str):
     stream = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are an executive analytics assistant."},
+            {"role": "system", "content": "You are an executive analytics assistant. Keep responses very brief."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.3,
+        max_tokens=90,
         stream=True
     )
 

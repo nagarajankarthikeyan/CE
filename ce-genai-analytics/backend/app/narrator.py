@@ -34,11 +34,11 @@ Structured result:
 Sample rows:
 {json.dumps(safe_rows, indent=2)}
 
-Write a concise executive explanation.
-Do NOT repeat raw numbers verbatim if already shown.
-Focus on trends, patterns, outliers, and performance insights.
-If time-based data is present, comment on growth or decline.
-Keep it executive-friendly and insight-driven.
+Write a short definition-style interpretation.
+Return at least 2 short sentences (max 40 words total).
+Never repeat or reference exact numbers already shown in table/KPI/chart.
+Explain what the metrics represent in plain business terms.
+Do NOT add recommendations, caveats, future steps, or extra detail.
 """
 
     async for token in stream_chat_completion(prompt):
