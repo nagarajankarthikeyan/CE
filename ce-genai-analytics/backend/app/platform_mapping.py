@@ -128,7 +128,12 @@ def find_platform_match(message: str, threshold: float = 0.84):
     # 1) Exact phrase match first (prefer longer synonyms).
     for synonym, canonical in sorted(PLATFORM_SYNONYMS.items(), key=lambda kv: len(kv[0]), reverse=True):
         syn = _normalize_text(synonym)
-        if syn and syn in msg_norm:
+        if not syn:
+            continue
+        # Require token/phrase boundaries to avoid false positives like:
+        # "li" matching "line" or "x" matching words containing x.
+        syn_pattern = r"\b" + r"\s+".join(re.escape(tok) for tok in syn.split()) + r"\b"
+        if re.search(syn_pattern, msg_norm, flags=re.IGNORECASE):
             return canonical, syn
 
     # 2) Fuzzy phrase match against n-grams.
