@@ -1,13 +1,23 @@
-<div class="login-container">
-  <h1>CE AI Analytics</h1>
-  <h2>Login</h2>
+<div class="login-page">
+  <div class="login-card">
+    <div class="ce-brand">
+      <img class="ce-logo" src="images/logo/constellation-logo.png" alt="Constellation logo" />
+      
+    </div>
 
-  <input [(ngModel)]="username" placeholder="Username" />
-  <input [(ngModel)]="password" type="password" placeholder="Password" />
+    <h1>Welcome</h1>
+    <p class="subhead">Sign in to continue to your analytics workspace.</p>
 
-  <button (click)="login()">Login</button>
+    <label for="username">Username</label>
+    <input id="username" [(ngModel)]="username" placeholder="Username" />
 
-  <p *ngIf="loginError" class="error">
-    Invalid credentials
-  </p>
+    <label for="password">Password</label>
+    <input id="password" [(ngModel)]="password" type="password" placeholder="Password" />
+
+    <button (click)="login()">Sign In</button>
+
+    <p *ngIf="loginError" class="error">
+      Invalid credentials
+    </p>
+  </div>
 </div>

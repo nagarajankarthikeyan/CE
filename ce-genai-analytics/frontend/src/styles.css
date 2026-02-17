@@ -1,1 +1,102 @@
 /* You can add global styles to this file, and also import other style files */
+
+/* src/styles.css */
+:root {
+  --ce-font-sans-serif:
+    "Benton Sans",
+    "BentonSans Book",
+    BentonSans,
+    "Noto Sans",
+    Roboto,
+    -apple-system,
+    "Segoe UI",
+    "Helvetica Neue",
+    Arial,
+    "Liberation Sans",
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Noto Color Emoji";
+  --ce-font-monospace:
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace;
+  --ce-gradient:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.16),
+      rgba(255, 255, 255, 0));
+  --ce-body-font-family: var(--ce-font-sans-serif);
+  --ce-body-font-size: 16px;
+  --ce-body-font-weight: 400;
+  --ce-text: #10233d;
+  --ce-text-muted: #4f6278;
+  --ce-heading: #0f2744;
+  --ce-surface: #ffffff;
+  --ce-surface-soft: #f3f7fb;
+  --ce-border: #d3dce7;
+  --ce-accent: #0f5ea8;
+  --ce-accent-2: #1572c7;
+  --ce-accent-soft: #e8f2fb;
+  --ce-shadow: 0 14px 30px rgba(16, 35, 61, 0.12);
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: var(--ce-body-font-family);
+  font-size: var(--ce-body-font-size);
+  font-weight: var(--ce-body-font-weight);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--ce-text);
+  background:
+    radial-gradient(
+      900px 380px at 0% -15%,
+      #dfeaf6 0%,
+      rgba(223, 234, 246, 0) 62%),
+    linear-gradient(
+      180deg,
+      #f8fbfe 0%,
+      #eef3f8 100%);
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+.ce-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ce-logo {
+  width: 160px;
+  height: 46px;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+.login-card .ce-logo {
+  width: 220px;
+  height: 68px;
+}
+
+.ce-brand-text {
+  font-weight: 700;
+  color: #1d73be;
+  letter-spacing: 0.01em;
+}
