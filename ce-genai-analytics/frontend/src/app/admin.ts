@@ -19,6 +19,8 @@ export class AdminComponent implements OnInit {
   showAddForm = false;
   addPasswordVisible = false;
   loadError = '';
+  createError = '';
+  editError = '';
   loading = false;
   creating = false;
   updatingId: number | null = null;
@@ -79,6 +81,7 @@ export class AdminComponent implements OnInit {
 
   createUser() {
     if (this.creating) return;
+    this.createError = '';
     this.creating = true;
     this.http.post('/api/admin/users', this.newUser, this.getAuthHeaders())
       .pipe(
@@ -95,12 +98,14 @@ export class AdminComponent implements OnInit {
           this.loadUsers();
         },
         error: err => {
+          this.createError = err?.error?.detail || 'Failed to create user';
           console.error('Create user failed', err);
         }
       });
   }
 
   startEdit(user: any) {
+    this.editError = '';
     this.editingId = user.UserID;
     this.editUser = {
       email: user.Email || '',
@@ -113,6 +118,7 @@ export class AdminComponent implements OnInit {
   }
 
   cancelEdit() {
+    this.editError = '';
     this.editingId = null;
     this.editPasswordVisible = false;
     this.editUser = { email: '', username: '', password: '', role: 'user', isActive: true };
@@ -120,6 +126,7 @@ export class AdminComponent implements OnInit {
 
   saveEdit(userId: number) {
     if (this.updatingId !== null) return;
+    this.editError = '';
     this.updatingId = userId;
     const payload: any = {
       email: this.editUser.email,
@@ -144,6 +151,7 @@ export class AdminComponent implements OnInit {
           this.loadUsers();
         },
         error: err => {
+          this.editError = err?.error?.detail || 'Failed to update user';
           console.error('Update user failed', err);
         }
       });

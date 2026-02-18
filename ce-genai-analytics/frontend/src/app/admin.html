@@ -25,7 +25,10 @@
       <button class="add-btn" (click)="showAddForm = !showAddForm">
         + Add User
       </button>
-      <div class="status-inline" *ngIf="loading">Loading users...</div>
+      <div class="status-inline status-with-spinner" *ngIf="loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading users...</span>
+      </div>
       <div class="status-error" *ngIf="loadError">{{ loadError }}</div>
     </div>
 
@@ -58,9 +61,16 @@
       </div>
 
       <div class="form-actions">
-        <button class="save-btn" (click)="createUser()">Create</button>
-        <button class="cancel-btn" (click)="showAddForm = false">Cancel</button>
+        <button class="save-btn" (click)="createUser()" [disabled]="creating">
+          <span class="btn-content" *ngIf="!creating">Create</span>
+          <span class="btn-content" *ngIf="creating">
+            <span class="spinner spinner-light" aria-hidden="true"></span>
+            <span>Creating...</span>
+          </span>
+        </button>
+        <button class="cancel-btn" (click)="showAddForm = false" [disabled]="creating">Cancel</button>
       </div>
+      <div class="status-error" *ngIf="createError">{{ createError }}</div>
     </div>
 
     <div class="table-wrap">
@@ -103,10 +113,22 @@
           <td>
             <div class="actions">
               <button *ngIf="editingId !== u.UserID" (click)="startEdit(u)">Edit</button>
-              <button *ngIf="editingId !== u.UserID" class="danger" (click)="deleteUser(u.UserID)">Delete</button>
+              <button *ngIf="editingId !== u.UserID" class="danger" (click)="deleteUser(u.UserID)" [disabled]="deletingId === u.UserID">
+                <span class="btn-content" *ngIf="deletingId !== u.UserID">Delete</span>
+                <span class="btn-content" *ngIf="deletingId === u.UserID">
+                  <span class="spinner spinner-light" aria-hidden="true"></span>
+                  <span>Deleting...</span>
+                </span>
+              </button>
 
-              <button *ngIf="editingId === u.UserID" class="save-btn" (click)="saveEdit(u.UserID)">Save</button>
-              <button *ngIf="editingId === u.UserID" class="cancel-btn" (click)="cancelEdit()">Cancel</button>
+              <button *ngIf="editingId === u.UserID" class="save-btn" (click)="saveEdit(u.UserID)" [disabled]="updatingId === u.UserID">
+                <span class="btn-content" *ngIf="updatingId !== u.UserID">Save</span>
+                <span class="btn-content" *ngIf="updatingId === u.UserID">
+                  <span class="spinner spinner-light" aria-hidden="true"></span>
+                  <span>Saving...</span>
+                </span>
+              </button>
+              <button *ngIf="editingId === u.UserID" class="cancel-btn" (click)="cancelEdit()" [disabled]="updatingId === u.UserID">Cancel</button>
             </div>
             <div class="reset-row" *ngIf="editingId === u.UserID">
               <div class="password-row">
@@ -116,6 +138,7 @@
                 </button>
               </div>
             </div>
+            <div class="status-error" *ngIf="editingId === u.UserID && editError">{{ editError }}</div>
           </td>
         </tr>
       </table>

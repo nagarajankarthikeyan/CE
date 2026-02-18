@@ -76,6 +76,28 @@ def create_user(data: dict, user=Depends(require_admin)):
     print("CREATE USER password length:", len(password.encode("utf-8")))
     role = data.get("role", "user")
 
+    exists_query = f"""
+    SELECT userid, email, username
+    FROM `{USERS_TABLE}`
+    WHERE LOWER(email) = LOWER(@email) OR LOWER(username) = LOWER(@username)
+    LIMIT 1
+    """
+    exists_job = client.query(
+        exists_query,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+                bigquery.ScalarQueryParameter("username", "STRING", username),
+            ]
+        ),
+    )
+    existing_user = next(iter(exists_job.result()), None)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User already exists with the same email or username"
+        )
+
     hashed = AuthService.hash_password(password)
 
     # get next UserID
@@ -110,6 +132,45 @@ def create_user(data: dict, user=Depends(require_admin)):
 
 @router.put("/users/{user_id}")
 def update_user(user_id: int, data: dict, user=Depends(require_admin)):
+    if "email" in data and isinstance(data["email"], str):
+        data["email"] = data["email"].strip()
+    if "username" in data and isinstance(data["username"], str):
+        data["username"] = data["username"].strip()
+
+    duplicate_checks = []
+    duplicate_params = [bigquery.ScalarQueryParameter("id", "INT64", user_id)]
+
+    if "email" in data:
+        duplicate_checks.append("LOWER(email) = LOWER(@email)")
+        duplicate_params.append(
+            bigquery.ScalarQueryParameter("email", "STRING", data["email"])
+        )
+
+    if "username" in data:
+        duplicate_checks.append("LOWER(username) = LOWER(@username)")
+        duplicate_params.append(
+            bigquery.ScalarQueryParameter("username", "STRING", data["username"])
+        )
+
+    if duplicate_checks:
+        duplicate_query = f"""
+        SELECT userid
+        FROM `{USERS_TABLE}`
+        WHERE userid != @id
+          AND ({" OR ".join(duplicate_checks)})
+        LIMIT 1
+        """
+        duplicate_job = client.query(
+            duplicate_query,
+            job_config=bigquery.QueryJobConfig(query_parameters=duplicate_params)
+        )
+        existing_user = next(iter(duplicate_job.result()), None)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="User already exists with the same email or username"
+            )
+
     sets = []
     params = {"id": user_id}
 

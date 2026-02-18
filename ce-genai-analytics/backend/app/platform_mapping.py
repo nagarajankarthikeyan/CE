@@ -1,119 +1,51 @@
 import re
 from difflib import SequenceMatcher
+from functools import lru_cache
+from google.cloud import bigquery
+from app.config import (
+    BIGQUERY_PROJECT,
+    BIGQUERY_DATASET,
+    BIGQUERY_LOCATION,
+    GOOGLE_APPLICATION_CREDENTIALS,
+)
 
-PLATFORM_SYNONYMS = {
+PLATFORM_SYNONYMS_TABLE = (
+    f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.platform_synonyms"
+)
 
-    # --- SA360 / Paid Search ---
-    "sa360": "SA360",
-    "search ads 360": "SA360",
-    "google sa360": "SA360",
-    "doubleclick search": "SA360",
-    "ds3": "SA360",
-    "paid search": "SA360",
-    "search": "SA360",
-    "sem": "SA360",
-    "google search": "SA360",
-    "google paid search": "SA360",
-    "bing search": "SA360",
-    "microsoft search": "SA360",
-
-    # --- META ---
-    "meta": "META",
-    "meta ads": "META",
-    "facebook": "META",
-    "facebook ads": "META",
-    "fb": "META",
-    "instagram": "META",
-    "instagram ads": "META",
-    "ig": "META",
-    "paid social meta": "META",
-
-    # --- DV360 / Programmatic ---
-    "dv360": "DV360",
-    "display & video 360": "DV360",
-    "display and video 360": "DV360",
-    "display video 360": "DV360",
-    "display/video 360": "DV360",
-    "google dv360": "DV360",
-    "programmatic": "DV360",
-    "programmatic display": "DV360",
-    "display": "DV360",
-    "banner": "DV360",
-    "gdn": "DV360",
-    "google display network": "DV360",
-    "prospecting display": "DV360",
-    "retargeting display": "DV360",
-
-    # --- YouTube ---
-    "youtube": "YOUTUBE",
-    "youtube ads": "YOUTUBE",
-    "yt": "YOUTUBE",
-    "google video": "YOUTUBE",
-    "trueview": "YOUTUBE",
-    "youtube pre-roll": "YOUTUBE",
-
-    # --- LinkedIn ---
-    "linkedin": "LINKEDIN",
-    "linkedin ads": "LINKEDIN",
-    "li": "LINKEDIN",
-
-    # --- TikTok ---
-    "tiktok": "TIKTOK",
-    "tiktok ads": "TIKTOK",
-    "tt": "TIKTOK",
-
-    # --- X (Twitter) ---
-    "x": "X",
-    "x ads": "X",
-    "twitter": "X",
-    "twitter ads": "X",
-    "paid twitter": "X",
-
-    # --- Pinterest ---
-    "pinterest": "PINTEREST",
-    "pinterest ads": "PINTEREST",
-
-    # --- Snapchat ---
-    "snapchat": "SNAPCHAT",
-    "snap ads": "SNAPCHAT",
-
-    # --- Amazon ---
-    "amazon": "AMAZON",
-    "amazon ads": "AMAZON",
-    "amazon sponsored products": "AMAZON",
-    "sponsored products": "AMAZON",
-    "sponsored brands": "AMAZON",
-    "amazon dsp": "AMAZON",
-    "retail media amazon": "AMAZON",
-
-    # --- Walmart ---
-    "walmart": "WALMART",
-    "walmart connect": "WALMART",
-    "walmart media": "WALMART",
-
-    # --- Target ---
-    "target": "TARGET",
-    "roundel": "TARGET",
-
-    # --- Apple Search ---
-    "apple search": "APPLE_SEARCH",
-    "apple search ads": "APPLE_SEARCH",
-    "asa": "APPLE_SEARCH",
-
-    # --- CRM / Owned Media (if needed) ---
-    "email": "EMAIL",
-    "crm": "EMAIL",
-    "lifecycle": "EMAIL",
-
-    # --- Affiliate ---
-    "affiliate": "AFFILIATE",
-    "affiliate marketing": "AFFILIATE",
-}
+client = bigquery.Client.from_service_account_json(
+    GOOGLE_APPLICATION_CREDENTIALS,
+    location=BIGQUERY_LOCATION
+)
 
 
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", text.lower())).strip()
+
+
+@lru_cache(maxsize=1)
+def _platform_synonyms() -> dict:
+    query = f"""
+    SELECT synonym, synonym_normalized, canonical_platform
+    FROM `{PLATFORM_SYNONYMS_TABLE}`
+    """
+    rows = client.query(query).result()
+
+    synonyms = {}
+    for row in rows:
+        canonical = (row.get("canonical_platform") or "").strip()
+        raw_synonym = (row.get("synonym") or "").strip()
+        normalized_synonym = (row.get("synonym_normalized") or "").strip()
+
+        if not canonical:
+            continue
+
+        key = normalized_synonym or _normalize_text(raw_synonym)
+        if key:
+            synonyms[key] = canonical
+
+    return synonyms
 
 
 def find_platform_match(message: str, threshold: float = 0.84):
@@ -124,9 +56,12 @@ def find_platform_match(message: str, threshold: float = 0.84):
     msg_norm = _normalize_text(message)
     if not msg_norm:
         return None, None
+    synonyms_map = _platform_synonyms()
+    if not synonyms_map:
+        return None, None
 
     # 1) Exact phrase match first (prefer longer synonyms).
-    for synonym, canonical in sorted(PLATFORM_SYNONYMS.items(), key=lambda kv: len(kv[0]), reverse=True):
+    for synonym, canonical in sorted(synonyms_map.items(), key=lambda kv: len(kv[0]), reverse=True):
         syn = _normalize_text(synonym)
         if not syn:
             continue
@@ -140,7 +75,7 @@ def find_platform_match(message: str, threshold: float = 0.84):
     tokens = msg_norm.split()
     best = (0.0, None, None)  # score, canonical, matched_phrase
 
-    for synonym, canonical in PLATFORM_SYNONYMS.items():
+    for synonym, canonical in synonyms_map.items():
         syn = _normalize_text(synonym)
         syn_tokens = syn.split()
         if not syn_tokens:
