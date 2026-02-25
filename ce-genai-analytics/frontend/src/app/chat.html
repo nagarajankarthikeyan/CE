@@ -33,12 +33,12 @@
     <!-- BOT STRUCTURED -->
     <div
       *ngIf="m.role === 'bot' && m.render && ['kpi','mixed','ranked_list','table','chart','narrative'].includes(m.render.render_type)"
-      class="bubble bot"
+      class="bubble bot analysis-response"
       [class.kpi-response]="m.render.render_type === 'kpi'"
     >
 
       <!-- KPI -->
-      <div *ngIf="m.render.render_type === 'kpi'" class="kpi-container">
+      <!-- <div *ngIf="m.render.render_type === 'kpi'" class="kpi-container">
         <div class="kpi-title" *ngIf="m.render.title">
           {{ m.render.title }}
         </div>
@@ -51,7 +51,7 @@
             </div>
           </div>
         </div>
-      </div>
+      </div> -->
 
       <!-- MIXED -->
       <div *ngIf="m.render.render_type === 'mixed'">
@@ -65,7 +65,7 @@
           </div>
         </div>
 
-        <table class="data-table" *ngIf="m.render.table?.rows?.length">
+        <table class="data-table" *ngIf="shouldRenderTable(m.queryText || '') && m.render.table?.rows?.length">
           <thead>
             <tr>
               <th *ngFor="let c of m.render.table.columns">{{ c }}</th>
@@ -78,9 +78,7 @@
           </tbody>
         </table>
 
-        <p class="render-narrative" *ngIf="m.render.narrative">
-          {{ m.render.narrative }}
-        </p>
+        <div class="narrative-text" *ngIf="m.render.narrative" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
       </div>
 
       <!-- RANKED LIST -->
@@ -113,14 +111,12 @@
 
 
 
-        <p *ngIf="m.render.narrative" class="render-narrative">
-          {{ m.render.narrative }}
-        </p>
+        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
 
       </div>
 
       <!-- PURE TABLE -->
-      <div *ngIf="m.render.render_type === 'table'" class="render-block">
+      <div *ngIf="m.render.render_type === 'table' && shouldRenderTable(m.queryText || '')" class="render-block">
 
         <h3 class="render-title" *ngIf="m.render.title">
           {{ m.render.title }}
@@ -144,20 +140,18 @@
           </tbody>
         </table>
 
-        <p *ngIf="m.render.narrative" class="render-narrative">
-          {{ m.render.narrative }}
-        </p>
+        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
 
       </div>
 
       <!-- CHART -->
-      <div *ngIf="m.render.render_type === 'chart'" class="render-block">
+      <!-- <div *ngIf="m.render.render_type === 'chart'" class="render-block">
 
         <h3 class="render-title" *ngIf="m.render.title">
           {{ m.render.title }}
         </h3>
 
-        <!-- Simple chart placeholder -->
+        
         <div class="chart-container">
           <div class="chart-row" *ngFor="let x of m.render.chart.x; let i = index">
             <div class="chart-label">{{ x }}</div>
@@ -167,9 +161,9 @@
               </div>
             </div>
           </div>
-        </div>
+        </div> 
 
-      </div>
+      </div>-->
 
 
       <!-- PURE NARRATIVE -->
@@ -179,24 +173,36 @@
           {{ m.render.title }}
         </h3>
 
-        <div class="narrative-text">
-          {{ m.render.narrative }}
-        </div>
+        <div class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
 
       </div>
 
     </div>
 
     <!-- BOT STREAMING TEXT -->
-    <div *ngIf="m.role === 'bot' && m.text" class="bubble bot">
-      {{ m.text }}
+    <div *ngIf="m.role === 'bot' && m.text" class="bubble bot analysis-response">
+      <div class="narrative-text" [innerHTML]="m.textHtml || getNarrativeHtml(m.text)"></div>
+
+      <div *ngIf="m.analysisCharts?.length" class="render-block">
+        <div class="analysis-chart-card" *ngFor="let chart of m.analysisCharts">
+          <h3 class="render-title" *ngIf="chart.title">{{ chart.title }}</h3>
+          <div class="analysis-chart-wrap">
+            <canvas
+              baseChart
+              [data]="chart.data"
+              [type]="chart.type"
+              [options]="chart.options"
+            ></canvas>
+          </div>
+        </div>
+      </div>
     </div>
 
   </div>
 
   <!-- STREAMING TEXT -->
-  <div *ngIf="streamingText" class="bubble bot streaming">
-    {{ streamingText }}
+  <div *ngIf="streamingText" class="bubble bot streaming analysis-response">
+    <div class="narrative-text" [innerHTML]="streamingHtml || getNarrativeHtml(streamingText)"></div>
   </div>
 
   <!-- TYPING INDICATOR -->
@@ -222,3 +228,5 @@
   </div>
 
 </div>
+
+

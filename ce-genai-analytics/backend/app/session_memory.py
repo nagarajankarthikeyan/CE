@@ -34,6 +34,22 @@ def get_session_filters(user_id, conversation_id):
 
 def _sanitize_conditions(conditions):
     import re
+    invalid_temporal_patterns = [
+        r"\bTIMESTAMP\s*\(\s*''\s*\)",
+        r"\bDATE\s*\(\s*''\s*\)",
+        r"\bDATETIME\s*\(\s*''\s*\)",
+        r"\bTIMESTAMP\s*\(\s*\"\"\s*\)",
+        r"\bDATE\s*\(\s*\"\"\s*\)",
+        r"\bDATETIME\s*\(\s*\"\"\s*\)",
+        r"\bPARSE_TIMESTAMP\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\bPARSE_DATE\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\bPARSE_DATETIME\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\bBETWEEN\s*''\s*AND\s*''",
+        r"\b(date|time|timestamp)\b.*=\s*''",
+        r"\b(date|time|timestamp)\b.*=\s*\"\"",
+        r"=\s*''.*\b(date|time|timestamp)\b",
+        r"=\s*\"\".*\b(date|time|timestamp)\b",
+    ]
     if not isinstance(conditions, list):
         return []
     out = []
@@ -46,6 +62,8 @@ def _sanitize_conditions(conditions):
         # Drop anything that looks like a clause tail, not a condition.
         if re.search(r"\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b", s, re.IGNORECASE):
             s = re.sub(r"\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b.*$", "", s, flags=re.IGNORECASE | re.DOTALL).strip()
+        if any(re.search(p, s, re.IGNORECASE) for p in invalid_temporal_patterns):
+            continue
         if s:
             out.append(s)
     return out

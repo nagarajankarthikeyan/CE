@@ -81,6 +81,7 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
         "spend", "cost", "click", "clicks", "impression", "impressions", "ctr",
         "total", "sum", "avg", "average",
     }
+    quarter_tokens = {"q1", "q2", "q3", "q4", "quarter", "quarters", "vs", "versus", "compared"}
 
     def is_valid_value(value: str) -> bool:
         v = (value or "").strip().lower()
@@ -90,6 +91,14 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
             return False
         tokens = [t for t in re.split(r"[^a-z0-9]+", v) if t]
         if not tokens:
+            return False
+        # Guardrail: avoid binding analytical phrasing as a dimension value
+        # (e.g., "q4 home services spend and performance compare to q3").
+        if any(t in noise_tokens for t in tokens):
+            return False
+        if any(t in quarter_tokens for t in tokens):
+            return False
+        if any(re.fullmatch(r"(19|20)\d{2}", t) for t in tokens):
             return False
         # "all campaigns", "show campaigns", etc. should not bind as a filter value.
         if all(t in noise_tokens for t in tokens):
@@ -102,7 +111,8 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
         for alias in sorted(_dimension_aliases(col), key=len, reverse=True):
             alias_re = re.escape(alias)
             value_stop = r"(?=\s+(?:today|yesterday|tomorrow|last|this|by|for|in|on|with|where)\b|[?.!,]|$)"
-            value_chunk = r"([a-z0-9]+(?:[ /&\-][a-z0-9]+){0,4})"
+            # Keep extraction tight to reduce accidental capture of query clauses.
+            value_chunk = r"([a-z0-9]+(?:[ /&\-][a-z0-9]+){0,2})"
             patterns = [
                 rf"\bon\s+{value_chunk}\s+{alias_re}\b",
                 rf"\bof\s+{value_chunk}\s+{alias_re}\b",

@@ -29,6 +29,7 @@ from app.session_memory import (
     store_session_filters,
     get_session_filters,
     extract_filters_from_sql,
+    clear_session,
 )
 
 router = APIRouter()
@@ -183,6 +184,171 @@ def dedupe_conditions(conditions: list[str]) -> list[str]:
         out.append(key)
     return out
 
+
+def _is_invalid_temporal_condition(condition: str) -> bool:
+    c = condition or ""
+    patterns = [
+        r"\bTIMESTAMP\s*\(\s*['\"]\s*['\"]\s*\)",
+        r"\bDATE\s*\(\s*['\"]\s*['\"]\s*\)",
+        r"\bDATETIME\s*\(\s*['\"]\s*['\"]\s*\)",
+        r"\bPARSE_TIMESTAMP\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\bPARSE_DATE\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\bPARSE_DATETIME\s*\([^,]+,\s*['\"]\s*['\"]\s*\)",
+        r"\b(CAST|SAFE_CAST)\s*\(\s*['\"]\s*['\"]\s+AS\s+(TIMESTAMP|DATE|DATETIME)\s*\)",
+        r"\bBETWEEN\s*''\s*AND\s*''",
+        r"\bBETWEEN\s*\"\"\s*AND\s*\"\"",
+        r"\bBETWEEN\s*''\s*AND\b",
+        r"\bBETWEEN\s*\"\"\s*AND\b",
+        r"\bBETWEEN\b.*\bAND\s*''\b",
+        r"\bBETWEEN\b.*\bAND\s*\"\"\b",
+        r"\b(date|time|timestamp|datetime)\b[^=<>!]*\s*(=|!=|<>|>=|<=|>|<)\s*''",
+        r"\b(date|time|timestamp|datetime)\b[^=<>!]*\s*(=|!=|<>|>=|<=|>|<)\s*\"\"",
+        r"''\s*(=|!=|<>|>=|<=|>|<)\s*[^ \n]*(date|time|timestamp|datetime)",
+        r"\"\"\s*(=|!=|<>|>=|<=|>|<)\s*[^ \n]*(date|time|timestamp|datetime)",
+        r"\b(date|time|timestamp)\b.*=\s*''",
+        r"\b(date|time|timestamp)\b.*=\s*\"\"",
+        r"=\s*''.*\b(date|time|timestamp)\b",
+        r"=\s*\"\".*\b(date|time|timestamp)\b",
+    ]
+    return any(re.search(p, c, re.IGNORECASE) for p in patterns)
+
+
+def strip_invalid_temporal_conditions(sql: str) -> str:
+    """
+    Remove malformed temporal predicates such as TIMESTAMP('') from WHERE.
+    Keeps the rest of the query intact.
+    """
+    if not sql or not isinstance(sql, str):
+        return sql
+
+    raw = sql.strip().rstrip(";")
+
+    # First, neutralize empty temporal literals anywhere in SQL so BigQuery won't fail.
+    # Examples: TIMESTAMP(''), DATE(""), DATETIME(''), CAST('' AS TIMESTAMP), SAFE_CAST("" AS DATE)
+    raw = re.sub(
+        r"\b(TIMESTAMP|DATE|DATETIME)\s*\(\s*(['\"])\s*\2\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bSAFE_CAST\s*\(\s*(['\"])\s*\1\s+AS\s+(TIMESTAMP|DATE|DATETIME)\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bCAST\s*\(\s*(['\"])\s*\1\s+AS\s+(TIMESTAMP|DATE|DATETIME)\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    # Normalize empty string temporal literals in direct comparisons to NULL.
+    raw = re.sub(
+        r"(\b(?:date|time|timestamp|datetime)\b[^=<>!\n]*\s*(?:=|!=|<>|>=|<=|>|<)\s*)''",
+        r"\1NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"(\b(?:date|time|timestamp|datetime)\b[^=<>!\n]*\s*(?:=|!=|<>|>=|<=|>|<)\s*)\"\"",
+        r"\1NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bBETWEEN\s*''\s*AND",
+        "BETWEEN NULL AND",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bBETWEEN\s*\"\"\s*AND",
+        "BETWEEN NULL AND",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bAND\s*''\b",
+        "AND NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bAND\s*\"\"\b",
+        "AND NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    # Handle parse functions with empty temporal input, e.g. PARSE_TIMESTAMP('%F', '').
+    raw = re.sub(
+        r"\bPARSE_TIMESTAMP\s*\(\s*[^,]+,\s*(['\"])\s*\1\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bPARSE_DATE\s*\(\s*[^,]+,\s*(['\"])\s*\1\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"\bPARSE_DATETIME\s*\(\s*[^,]+,\s*(['\"])\s*\1\s*\)",
+        "NULL",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    split_match = re.search(r"\b(GROUP BY|ORDER BY|LIMIT|HAVING)\b", raw, re.IGNORECASE)
+    base_sql = raw if not split_match else raw[:split_match.start()]
+    tail_sql = "" if not split_match else raw[split_match.start():]
+
+    where_match = re.search(r"\bWHERE\b(?P<body>.*)$", base_sql, re.IGNORECASE | re.DOTALL)
+    if not where_match:
+        return raw
+
+    prefix = base_sql[:where_match.start()].rstrip()
+    body = where_match.group("body")
+    parts = [p.strip() for p in re.split(r"\bAND\b", body, flags=re.IGNORECASE) if p.strip()]
+    valid_parts = [p for p in parts if not _is_invalid_temporal_condition(p)]
+
+    if valid_parts:
+        rebuilt = f"{prefix} WHERE " + " AND ".join(valid_parts)
+    else:
+        rebuilt = prefix
+
+    return (rebuilt + ("\n" + tail_sql if tail_sql else "")).strip()
+
+
+def scrub_sql_for_invalid_timestamp(sql: str) -> str:
+    """
+    Last-resort sanitization used only when BigQuery returns:
+    Invalid timestamp: ''
+    """
+    if not sql or not isinstance(sql, str):
+        return sql
+
+    cleaned = strip_invalid_temporal_conditions(sql)
+    cleaned = re.sub(
+        r"\b(TIMESTAMP|DATE|DATETIME)\s*\(\s*(['\"])\s*\2\s*\)",
+        "NULL",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(PARSE_TIMESTAMP|PARSE_DATE|PARSE_DATETIME)\s*\(\s*[^,]+,\s*(['\"])\s*\2\s*\)",
+        "NULL",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(CAST|SAFE_CAST)\s*\(\s*(['\"])\s*\2\s+AS\s+(TIMESTAMP|DATE|DATETIME)\s*\)",
+        "NULL",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
 @router.get("/chat/stream")
 async def chat_stream(
     request: Request,
@@ -319,6 +485,9 @@ async def chat_stream(
                 conditions = dedupe_conditions(conditions)
                 sql = inject_filters_safely(sql, conditions)
 
+            # Remove malformed temporal predicates such as TIMESTAMP('').
+            sql = strip_invalid_temporal_conditions(sql)
+
             # ----------------------------------
             # 4. Store filters for next turn
             # ----------------------------------
@@ -354,7 +523,17 @@ async def chat_stream(
 
             # Execute SQL
             exec_start = time.time()
-            rows = execute_sql(sql, {})
+            try:
+                rows = execute_sql(sql, {})
+            except Exception as ex:
+                if "Invalid timestamp: ''" in str(ex):
+                    # Drop stale/bad temporal artifacts and retry once.
+                    clear_session(user_id, conversation_id)
+                    sql = scrub_sql_for_invalid_timestamp(sql)
+                    audit_data["generatedsql"] = sql[:4000]
+                    rows = execute_sql(sql, {})
+                else:
+                    raise
 
             exec_duration = int((time.time() - exec_start) * 1000)
             

@@ -1,6 +1,80 @@
 from app.gpt_client import stream_chat_completion
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+
+
+ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Constellation. You just ran a SQL query for a marketer and got results back. Your job is to present the findings in clear, conversational prose that a non-technical marketer can understand.
+
+## Rules for your analysis
+1. Write in natural language - do NOT output raw tables or pipe-delimited data.
+2. Start with one short scope sentence on what window/slice you summarized.
+3. Use this dynamic response pattern (adapt wording to the question):
+   - "<time window/topic> — Key takeaways"
+   - "Overall performance (all platforms)" when platform/source fields exist, otherwise "Performance snapshot (<time/topic>)"
+   - "Platform-by-platform detail" when platform/source fields exist
+   - "Data quality notes (important)" when null/unknown/zero-only artifacts appear
+   - "Suggested takeaway / next step"
+4. Summarize key findings up front, then provide detail.
+5. Use markdown formatting with proper headings and bullet lists on separate lines.
+6. Format numbers in a human-friendly way: use dollar signs for money ($9,096.49), percentages for rates (12.3%), and abbreviations for large numbers (1.2M).
+7. Format dates in a readable way (e.g., "February 21, 2026" not "2026-02-21").
+8. If there are trends, comparisons, or outliers, call them out.
+9. If data is small (few rows), mention each key point; if large, summarize patterns and highlight top/bottom performers.
+10. Only mention metrics present in the query result. Do not invent values.
+11. End with a brief takeaway or suggestion if appropriate.
+12. Do not output markdown tables.
+13. Avoid generic statements; tie every claim to a metric from results.
+14. For relative periods like "last week", "this week", "last month", include the explicit date range in the first heading using readable dates.
+15. Preferred heading style example: "Last week's program performance (February 16-22, 2026) - Energy".
+16. If you include a chart, also include a short "Chart analysis" subsection in prose (2-4 bullets) that explains the top performer, lowest performer, and concentration/share pattern.
+17. For single-row or single-metric answers (for example: "how much was spend on meta this month"), use a compact format:
+   - one brief lookup sentence
+   - "Key finding (month-to-date)" (or matching period)
+   - optional "A bit more detail"
+   - "Takeaway"
+18. Include explicit date ranges for relative periods in prose, like "February 1, 2026 through February 25, 2026".
+
+## Important Metric Rules
+- For program performance questions, prioritize: spend, impressions, clicks, CTR, CPC, CPM, total enrollments, cost per enrollment (CPE), enrollment rate.
+- If both totals and platform/source rows are present, include both.
+- If datasource/platform is null/unknown or has impossible combinations (e.g., enrollments with zero spend/clicks), explicitly call this out in data quality notes.
+- When rates are already percentages in data, do NOT multiply by 100 again.
+- For "last week", assume Monday-Sunday week boundaries.
+- For "this month", assume month-to-date from first day of month through today.
+
+## Snapshot Grouping Guidance
+Use only groups relevant to available metrics:
+- Scale & Spend: spend, impressions, clicks, reach.
+- Engagement / Cost Efficiency: CTR, CPC, CPM, CPA, CPV, frequency, cost per enrollment.
+- Outcome Metrics: total enrollments, enrollment rate, conversions, calls, leads, revenue.
+
+## Data Visualization
+When the data would benefit from a chart (comparisons, trends over time, distributions, rankings), include a chart specification. Place it AFTER your prose analysis using a <CHART> tag with JSON inside.
+
+Chart JSON format:
+{
+  "type": "bar" | "line" | "pie",
+  "title": "Chart title",
+  "data": [ { "label": "...", "value": 123 }, ... ],
+  "xKey": "label",
+  "yKeys": [ { "key": "value", "label": "Human-readable label" } ]
+}
+
+Guidelines for chart type:
+- bar: comparing categories and rankings.
+- line: trends over time.
+- pie: proportions/share of total (only when 2-7 categories and composition-focused).
+
+Rules:
+- Include a chart whenever there are 2+ meaningful numeric data points.
+- Keep labels clean and readable (e.g., "Feb 21").
+- Use numeric values (not strings) for y-axis series.
+- Limit to 20 points max.
+- Only one chart per response.
+- Prefer bar chart for platform/source comparison; line for time trends.
+- The <CHART> tag must contain valid JSON and nothing else.
+- The "Chart analysis" prose must appear before the <CHART> block.
+"""
 
 
 def json_safe(obj):
@@ -12,21 +86,172 @@ def json_safe(obj):
     return str(obj)
 
 
+def format_results_for_llm(rows: list, total_rows: int) -> str:
+    """
+    Formats query rows for analysis context while keeping deterministic structure.
+    This is for LLM input only; user-facing output should remain narrative.
+    """
+    if not rows:
+        return "The query returned no results."
+
+    headers = list(rows[0].keys())
+    text = f"Query returned {total_rows} row{'s' if total_rows != 1 else ''}. Here is the data:\n\n"
+    text += "| " + " | ".join(headers) + " |\n"
+    text += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+
+    for row in rows[:100]:
+        values = []
+        for h in headers:
+            val = row.get(h)
+            if val is None:
+                values.append("null")
+            elif isinstance(val, dict) and "value" in val:
+                values.append(str(val["value"]))
+            else:
+                values.append(str(val))
+        text += "| " + " | ".join(values) + " |\n"
+
+    if total_rows > 100:
+        text += f"\n(Showing first 100 of {total_rows} rows)\n"
+
+    return text
+
+
+def _safe_float(val):
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            cleaned = val.replace("$", "").replace("%", "").replace(",", "").strip()
+            if cleaned == "":
+                return None
+            return float(cleaned)
+        return float(val)
+    except Exception:
+        return None
+
+
+def _find_key(row: dict, candidates: list[str]) -> str | None:
+    lowered = {str(k).strip().lower(): k for k in row.keys()}
+    for c in candidates:
+        if c in lowered:
+            return lowered[c]
+    return None
+
+
+def _fmt_long_date(d: date) -> str:
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
+
+
+def build_period_facts(question: str) -> str:
+    q = (question or "").lower()
+    today = date.today()
+    facts = []
+
+    if "last week" in q:
+        week_start = today - timedelta(days=today.weekday() + 7)
+        week_end = week_start + timedelta(days=6)
+        facts.append(
+            f"- Last week date range (Monday-Sunday): {_fmt_long_date(week_start)} through {_fmt_long_date(week_end)}"
+        )
+
+    if "this month" in q or "month-to-date" in q or "mtd" in q:
+        month_start = date(today.year, today.month, 1)
+        facts.append(
+            f"- This month-to-date range: {_fmt_long_date(month_start)} through {_fmt_long_date(today)}"
+        )
+
+    if any(k in q for k in ["meta", "facebook", "instagram"]):
+        facts.append("- Meta scope: include Meta/Facebook/Instagram platform labels when applicable.")
+
+    if not facts:
+        return "- No explicit relative period detected."
+
+    return "\n".join(facts)
+
+
+def build_verified_facts(rows: list, render_spec: dict) -> str:
+    facts = []
+
+    # Pull KPI-level totals from render spec when available.
+    kpis = render_spec.get("kpis") or []
+    for k in kpis:
+        label = str(k.get("label", "")).lower()
+        value = str(k.get("value", "")).strip()
+        if not value:
+            continue
+        if "spend" in label and ("total" in label or label == "spend"):
+            facts.append(f"- Total spend: {value}")
+        elif "enrollment" in label and "cost" not in label and "rate" not in label:
+            facts.append(f"- Total enrollments: {value}")
+        elif "cost per enrollment" in label or label == "cpe":
+            facts.append(f"- Cost per enrollment (CPE): {value}")
+
+    # Infer top platform/source by enrollments and clicks from row-level data.
+    if rows:
+        sample = rows[0]
+        source_key = _find_key(sample, ["datasource", "platform", "source", "channel"])
+        enroll_key = _find_key(sample, ["total_enrollments", "enrollments", "total_enrollment", "enrollment_count"])
+        clicks_key = _find_key(sample, ["clicks", "total_clicks"])
+
+        by_source = {}
+        if source_key and (enroll_key or clicks_key):
+            for r in rows:
+                src = str(r.get(source_key, "")).strip()
+                if not src or src.lower() in {"null", "none", "unknown", "(not set)"}:
+                    continue
+                if src not in by_source:
+                    by_source[src] = {"enrollments": 0.0, "clicks": 0.0}
+                if enroll_key:
+                    v = _safe_float(r.get(enroll_key))
+                    if v is not None:
+                        by_source[src]["enrollments"] += v
+                if clicks_key:
+                    v = _safe_float(r.get(clicks_key))
+                    if v is not None:
+                        by_source[src]["clicks"] += v
+
+        if by_source:
+            if any(v["enrollments"] > 0 for v in by_source.values()):
+                top_enroll = max(by_source.items(), key=lambda kv: kv[1]["enrollments"])
+                facts.append(f"- Enrollment driver: {top_enroll[0]} ({top_enroll[1]['enrollments']:.0f} enrollments)")
+            if any(v["clicks"] > 0 for v in by_source.values()):
+                top_clicks = max(by_source.items(), key=lambda kv: kv[1]["clicks"])
+                facts.append(f"- Click volume leader: {top_clicks[0]} ({top_clicks[1]['clicks']:.0f} clicks)")
+
+    if not facts:
+        return "- No pre-verified summary facts were derived."
+    return "\n".join(dict.fromkeys(facts))
+
+
 async def stream_narrative(question: str, rows: list, render_spec: dict):
     """
     Async generator.
-    MUST NOT buffer full response.
-    Streams tokens progressively.
+    Streams analysis tokens progressively.
     BigQuery-safe JSON serialization.
     """
 
-    # Convert sample rows safely (avoid date serialization crash)
-    safe_rows = json.loads(json.dumps(rows[:10], default=json_safe))
+    safe_rows = json.loads(json.dumps(rows[:100], default=json_safe))
     safe_render = json.loads(json.dumps(render_spec, default=json_safe))
+    query_result_text = format_results_for_llm(safe_rows, len(rows))
+    verified_facts = build_verified_facts(safe_rows, safe_render)
+    period_facts = build_period_facts(question)
 
     prompt = f"""
-User question:
+The user asked:
 {question}
+
+Today's date:
+{date.today().isoformat()}
+
+Verified facts (use these exact values when referenced):
+{verified_facts}
+
+Period facts (must be reflected when applicable):
+{period_facts}
+
+Here are the query results:
+{query_result_text}
 
 Structured result:
 {json.dumps(safe_render, indent=2)}
@@ -34,12 +259,11 @@ Structured result:
 Sample rows:
 {json.dumps(safe_rows, indent=2)}
 
-Write a short definition-style interpretation.
-Return at least 2 short sentences (max 40 words total).
-Never repeat or reference exact numbers already shown in table/KPI/chart.
-Explain what the metrics represent in plain business terms.
-Do NOT add recommendations, caveats, future steps, or extra detail.
+Generate a dynamic business summary that follows the required response pattern.
+Adapt the heading text and bullet content to the question and available metrics.
+Return markdown.
+If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """
 
-    async for token in stream_chat_completion(prompt):
+    async for token in stream_chat_completion(prompt, system_prompt=ANALYSIS_SYSTEM):
         yield token
