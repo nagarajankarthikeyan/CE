@@ -82,7 +82,7 @@
       </div>
 
       <!-- RANKED LIST -->
-      <div *ngIf="m.render.render_type === 'ranked_list'">
+      <!-- <div *ngIf="m.render.render_type === 'ranked_list'">
 
         <h3 class="render-title" *ngIf="m.render.title">
           {{ m.render.title }}
@@ -91,7 +91,7 @@
         <ul class="ranked-list">
           <li *ngFor="let r of m.render.ranked_list; let i = index">
 
-            <!-- Object form: {label, value} -->
+            
             <ng-container *ngIf="r?.label; else simpleRank">
               <strong>{{i + 1}}. {{ r.label }}</strong>
               <span *ngIf="r.value !== undefined">
@@ -99,7 +99,7 @@
               </span>
             </ng-container>
 
-            <!-- Simple string/number form -->
+            
             <ng-template #simpleRank>
               <strong>{{i + 1}}</strong> {{ r }}
             </ng-template>
@@ -113,7 +113,7 @@
 
         <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
 
-      </div>
+      </div> -->
 
       <!-- PURE TABLE -->
       <div *ngIf="m.render.render_type === 'table' && shouldRenderTable(m.queryText || '')" class="render-block">

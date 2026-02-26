@@ -369,9 +369,12 @@ export class ChatComponent implements OnInit {
     const cleanText = this.parseChartSpecs(text).cleanContent;
     const normalized = this.normalizeMarkdown(cleanText);
     const html = marked.parse(normalized) as string;
-    return html
+    const cleaned = html
       .replace(/<h1\b/gi, '<h3')
       .replace(/<\/h1>/gi, '</h3>')
+      .replace(/<strong>\s*Total\s*<br\s*\/?>\s*Spend:\s*<\/strong>/gi, '<strong>Total Spend:</strong>')
+      .replace(/<strong>\s*Total\s*<br\s*\/?>\s*Impressions:\s*<\/strong>/gi, '<strong>Total Impressions:</strong>')
+      .replace(/<strong>\s*Total\s*<br\s*\/?>\s*Clicks:\s*<\/strong>/gi, '<strong>Total Clicks:</strong>')
       .replace(/<h[1-6][^>]*>\s*<\/h[1-6]>/gi, '')
       .replace(/<h([1-6])([^>]*)>\s*#\s*/gi, '<h$1$2>')
       .replace(/<h4>([^<]*?)-\s*<\/h4>/gi, '<h4>$1</h4>')
@@ -384,6 +387,187 @@ export class ChatComponent implements OnInit {
       .replace(/<li[^>]*>\s*<h[1-6][^>]*>\s*<\/h[1-6]>\s*<\/li>/gi, '')
       .replace(/<ul>\s*<\/ul>/gi, '')
       .replace(/<ol>\s*<\/ol>/gi, '');
+    return this.postProcessNarrativeHtml(cleaned);
+  }
+
+  private postProcessNarrativeHtml(html: string): string {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div id="narr-root">${html}</div>`, 'text/html');
+    const root = doc.getElementById('narr-root');
+    if (!root) return html;
+
+    const sectionHeadingRegex =
+      /^(Overview|Key takeaway|Key takeaways|Overall performance(?:\s*\(all platforms\))?|Platform-by-platform detail|Data quality notes|What stands out|Suggested next step|Suggested takeaway(?:\s*\/\s*next step)?|Suggested takeaway|Next step|Chart analysis)\s*:?\s*(.*)$/i;
+    const narrativeStarterRegex = /\b(Overall|Today|This|In this|For this|Here)\b/;
+
+    const cleanText = (value: string) => value.replace(/\s+/g, ' ').trim();
+    const canonicalHeading = (value: string): string => {
+      const t = cleanText(value).toLowerCase();
+      if (/^key takeaway(s)?$/.test(t)) return 'Key takeaway';
+      if (/^what stands out$/.test(t)) return 'What stands out';
+      if (/^chart analysis$/.test(t)) return 'Chart analysis';
+      if (/^platform-by-platform detail$/.test(t)) return 'Platform-by-platform detail';
+      if (/^overall performance(\s*\(all platforms\))?$/.test(t)) return t.includes('(all platforms)') ? 'Overall performance (all platforms)' : 'Overall performance';
+      if (/^data quality notes$/.test(t)) return 'Data quality notes';
+      if (/^overview$/.test(t)) return 'Overview';
+      if (/^suggested next step$/.test(t)) return 'Suggested next step';
+      if (/^suggested takeaway(\/next step)?$/.test(t)) return 'Suggested takeaway / next step';
+      return cleanText(value);
+    };
+
+    const removeEmptyNodes = () => {
+      const removable = root.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, ul, ol');
+      removable.forEach((node) => {
+        const text = cleanText(node.textContent || '');
+        if (!text || text === '-' || text === '*' || text === '•') {
+          node.remove();
+        }
+      });
+    };
+
+    // Normalize paragraphs that accidentally contain section headers.
+    root.querySelectorAll('p').forEach((p) => {
+      const text = cleanText(p.textContent || '');
+      const match = text.match(sectionHeadingRegex);
+      if (!match) return;
+
+      const h = doc.createElement('h3');
+      h.textContent = match[1];
+      p.parentNode?.insertBefore(h, p);
+
+      const remainder = cleanText(match[2] || '');
+      if (remainder) {
+        const nextP = doc.createElement('p');
+        nextP.textContent = remainder;
+        p.parentNode?.insertBefore(nextP, p);
+      }
+      p.remove();
+    });
+
+    // Split glued heading + paragraph content.
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const text = cleanText(h.textContent || '').replace(/^#\s*/, '');
+      if (!text) {
+        h.remove();
+        return;
+      }
+
+      const sectionMatch = text.match(sectionHeadingRegex);
+      if (sectionMatch && sectionMatch[2]) {
+        h.textContent = sectionMatch[1];
+        const p = doc.createElement('p');
+        p.textContent = cleanText(sectionMatch[2]);
+        h.parentNode?.insertBefore(p, h.nextSibling);
+        return;
+      }
+
+      if (text.length > 70) {
+        const splitIdx = text.search(narrativeStarterRegex);
+        if (splitIdx > 15) {
+          const headingPart = cleanText(text.slice(0, splitIdx));
+          const bodyPart = cleanText(text.slice(splitIdx));
+          if (headingPart && bodyPart) {
+            h.textContent = headingPart;
+            const p = doc.createElement('p');
+            p.textContent = bodyPart;
+            h.parentNode?.insertBefore(p, h.nextSibling);
+          }
+        } else {
+          h.textContent = text;
+        }
+      } else {
+        h.textContent = text;
+      }
+      h.textContent = canonicalHeading(h.textContent || '');
+    });
+
+    // If list item is only a heading marker, move it out so list alignment stays valid.
+    root.querySelectorAll('li').forEach((li) => {
+      const children = Array.from(li.children);
+      const first = children[0];
+      if (!first || !/^H[1-6]$/.test(first.tagName)) return;
+
+      const parentList = li.parentElement;
+      if (!parentList) return;
+
+      const heading = first.cloneNode(true) as HTMLElement;
+      parentList.parentNode?.insertBefore(heading, parentList);
+
+      const clone = li.cloneNode(true) as HTMLElement;
+      const headingInClone = clone.querySelector(first.tagName.toLowerCase());
+      headingInClone?.remove();
+      const rest = cleanText(clone.textContent || '');
+      if (rest) {
+        const p = doc.createElement('p');
+        p.textContent = rest;
+        parentList.parentNode?.insertBefore(p, parentList);
+      }
+      li.remove();
+    });
+
+    // Flatten stray paragraphs inside list items (causes uneven spacing).
+    root.querySelectorAll('li p').forEach((p) => {
+      const text = cleanText(p.textContent || '');
+      const li = p.parentElement;
+      if (!li) return;
+      const replacement = doc.createTextNode(text);
+      li.replaceChild(replacement, p);
+    });
+
+    // Heal split heading cases like "Suggested" + "next step ...".
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const headingText = cleanText(h.textContent || '').toLowerCase();
+      if (headingText !== 'suggested') return;
+
+      const next = h.nextElementSibling;
+      if (!next || next.tagName !== 'P') return;
+      const body = cleanText(next.textContent || '');
+      const m = body.match(/^next step\s*:?\s*(.*)$/i);
+      if (!m) return;
+
+      h.textContent = 'Suggested next step';
+      next.textContent = cleanText(m[1] || '');
+      if (!next.textContent) next.remove();
+    });
+
+    // Merge parenthetical-only paragraphs into previous heading: "Overview" + "(Feb 2026)".
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const next = h.nextElementSibling;
+      if (!next || next.tagName !== 'P') return;
+      const ptxt = cleanText(next.textContent || '');
+      if (!/^\([^()]{2,80}\)$/.test(ptxt)) return;
+      h.textContent = `${cleanText(h.textContent || '')} ${ptxt}`;
+      next.remove();
+    });
+
+    // Convert single-item date bullet list under Overview into paragraph.
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      if (!/^overview$/i.test(cleanText(h.textContent || ''))) return;
+      const next = h.nextElementSibling;
+      if (!next || next.tagName !== 'UL') return;
+      const items = Array.from(next.querySelectorAll('li'));
+      if (items.length !== 1) return;
+      const txt = cleanText(items[0].textContent || '');
+      if (!/^[A-Za-z]+\s+\d{1,2},\s+\d{4}$/.test(txt)) return;
+      const p = doc.createElement('p');
+      p.textContent = txt;
+      next.parentNode?.insertBefore(p, next);
+      next.remove();
+    });
+
+    // Remove empty section headers that are immediately followed by another header.
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const next = h.nextElementSibling;
+      if (!next || !/^H[1-6]$/.test(next.tagName)) return;
+      const txt = cleanText(h.textContent || '');
+      if (/^(What stands out|Overview|Key takeaway|Key takeaways|Chart analysis|Data quality notes)$/i.test(txt)) {
+        h.remove();
+      }
+    });
+
+    removeEmptyNodes();
+    removeEmptyNodes();
+    return root.innerHTML;
   }
 
   private escapeStreamingText(text: string): string {
@@ -425,12 +609,20 @@ export class ChatComponent implements OnInit {
     out = out.replace(/(\b20\d{2})\s*(Overall performance\b)/gi, '$1\n\n### $2');
     out = out.replace(/^\s*[-*]\s*([A-Za-z0-9 ()-]*Overall performance[^.\n]*)\s*$/gim, '### $1');
     out = out.replace(/(Overview\s*\([^)]*\))\s*(Key finding\s*\([^)]*\)\s*:)/gi, '$1\n\n### $2');
+    out = out.replace(/(this month\s*\([^)]*\))\s*(Key finding\s*\([^)]*\)\s*:)/gi, '### $1\n\n### $2');
     out = out.replace(/(Month-to-Date\s*\([^)]*\))\s*(Key finding\s*\([^)]*\)\s*:)/gi, '### $1\n\n### $2');
+    out = out.replace(/(\.\s*)(This amount reflects\b)/gi, '$1\n\n$2');
+    out = out.replace(/(\.\s*)(\*\*Takeaway:\*\*|Takeaway:)/gi, '$1\n\n### Takeaway:\n\n');
     out = out.replace(/([.!?]\s*)(A bit more detail\s*:)/gi, '$1\n\n### $2');
     out = out.replace(/([.!?]\s*)(Takeaway\s*:)/gi, '$1\n\n### $2');
     out = out.replace(/(Key finding\s*\([^)]*\)\s*:)\s*([A-Z])/gi, '### $1\n\n$2');
     out = out.replace(/(A bit more detail\s*:)\s*([A-Z])/gi, '### $1\n\n$2');
     out = out.replace(/(Takeaway\s*:)\s*([A-Z])/gi, '### $1\n\n$2');
+    out = out.replace(/(Overall performance \(all platforms\))\s*([A-Z])/gi, '### $1\n\n$2');
+    out = out.replace(/(What stands out)\s*([A-Z])/gi, '### $1\n\n$2');
+    out = out.replace(/(Chart analysis)\s*([A-Z])/gi, '### $1\n\n$2');
+    out = out.replace(/^\s*(Overview|Key takeaway|Platform-by-platform detail|Data quality notes|Suggested takeaway\s*\/\s*next step|Chart analysis)\s*$/gim, '### $1');
+    out = out.replace(/([^\n])\s+(Overview|Key takeaway|Platform-by-platform detail|Data quality notes|Suggested takeaway\s*\/\s*next step|Chart analysis)\b/gi, '$1\n\n### $2');
     out = out.replace(/^\s*Key takeaway\s*s?\s*$/gim, '### Key takeaways');
     out = out.replace(/^\s*Key takeaway\s*\n\s*s\s*$/gim, '### Key takeaways');
     out = out.replace(/(Key Takeaways?)\s*([A-Z])/gi, '$1\n\n$2');
@@ -460,16 +652,20 @@ export class ChatComponent implements OnInit {
     out = out.replace(/([^\n])\s+([A-Za-z][A-Za-z0-9' ()/&-]{0,60}:\s*Key Takeaways\b)/gi, '$1\n\n$2');
     out = out.replace(/([^\n])\s+(Scale\s*&\s*Spend:|Engagement\s*\/\s*Cost\s*Efficiency:|Enrollment outcomes:)/gi, '$1\n\n$2');
     out = out.replace(/([^\n])\s+((?:Click-Through Rate\s*\(CTR\)|CTR)\s*:\s*[0-9.,]+%?)\s+(What\s+Stands\s+Out\b)/gi, '$1\n$2\n\n$3');
+    out = out.replace(
+      /((?:Total Spend|Total Impressions|Total Clicks|Total Enrollments|Enrollment Rate|Cost per Enrollment|Spend|Impressions|Clicks)\s*:[^\n]+)\s+(?=(?:Total Spend|Total Impressions|Total Clicks|Total Enrollments|Enrollment Rate|Cost per Enrollment|Spend|Impressions|Clicks)\s*:)/gi,
+      '$1\n\n'
+    );
 
     // Break out common metric labels if they are glued inline.
     out = out.replace(
-      /([^\n])\s+((Total Spend|Total Clicks|Total Impressions|Click-Through Rate \(CTR\)|Spend|Impressions|Clicks|CTR)\s*:)/gi,
+      /([^\n])\s+((Total Spend|Total Clicks|Total Impressions|Click-Through Rate \(CTR\)|CTR)\s*:)/gi,
       '$1\n$2'
     );
 
     // Promote plain section labels to markdown headings.
     out = out.replace(/^\s*([A-Za-z][A-Za-z0-9' ()/&-]{0,60}:\s*Key Takeaways)\s*$/gim, '### $1');
-    out = out.replace(/^\s*(What Stands Out|Key Takeaways|Performance Snapshot(?:\s*\([^)]*\))?|Key Findings|Detailed Insights)\s*$/gim, '### $1');
+    out = out.replace(/^\s*(What Stands Out|What stands out|Key Takeaways|Key takeaway|Performance Snapshot(?:\s*\([^)]*\))?|Overall performance \(all platforms\)|Key Findings|Detailed Insights|Chart analysis)\s*$/gim, '### $1');
     out = out.replace(/^\s*(Scale\s*&\s*Spend|Engagement\s*\/\s*Cost\s*Efficiency|Enrollment outcomes)\s*:\s*$/gim, '#### $1');
     out = out.replace(/^\s*(Scale\s*&\s*spend|Engagement\s*\/\s*cost\s*efficiency|Enrollment\s*outcomes)\s*:\s*$/gim, '#### $1');
     out = out.replace(/^\s*[-*]\s*(Month-to-Date\s*\([^)]*\))\s*$/gim, '### $1');
@@ -583,7 +779,7 @@ export class ChatComponent implements OnInit {
     const charts: ChartSpec[] = [];
     let cleanContent = content;
 
-    const chartRegex = /<CHART>([\s\S]*?)<\/CHART>/g;
+    const chartRegex = /<\s*CHART\s*>([\s\S]*?)<\s*\/\s*CHART\s*>/gi;
     let match: RegExpExecArray | null;
 
     while ((match = chartRegex.exec(content)) !== null) {
@@ -612,7 +808,7 @@ export class ChatComponent implements OnInit {
 
     // Tolerate incomplete stream where </CHART> may not have arrived in final chunk.
     if (!charts.length) {
-      const openOnly = content.match(/<CHART>([\s\S]*)$/i);
+      const openOnly = content.match(/<\s*CHART\s*>([\s\S]*)$/i);
       if (openOnly?.[1]) {
         try {
           const raw = openOnly[1].trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
@@ -648,9 +844,9 @@ export class ChatComponent implements OnInit {
     }
 
     cleanContent = cleanContent.replace(chartRegex, '').trim();
-    cleanContent = cleanContent.replace(/<CHART>[\s\S]*$/i, '').trim();
+    cleanContent = cleanContent.replace(/<\s*CHART\s*>[\s\S]*$/i, '').trim();
     cleanContent = cleanContent.replace(/\{\s*"type"\s*:\s*"(bar|line|pie)"[\s\S]*$/i, '').trim();
-    cleanContent = cleanContent.replace(/<CHART>\s*$/i, '').trim();
+    cleanContent = cleanContent.replace(/<\s*CHART\s*>\s*$/i, '').trim();
     return { cleanContent, charts };
   }
 
@@ -811,4 +1007,3 @@ export class ChatComponent implements OnInit {
     };
   }
 }
-

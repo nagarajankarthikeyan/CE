@@ -193,12 +193,12 @@
 
 .analysis-response .narrative-text {
   font-size: 15px;
-  line-height: 1.6;
+  line-height: 1.32;
   color: #19324f;
 }
 
 .analysis-response .narrative-text p {
-  margin: 0 0 10px;
+  margin: 0 0 2px;
 }
 
 .analysis-response .narrative-text p:first-child {
@@ -211,7 +211,7 @@
 .analysis-response .narrative-text h2,
 .analysis-response .narrative-text h3,
 .analysis-response .narrative-text h4 {
-  margin: 14px 0 8px;
+  margin: 8px 0 4px;
   color: #102c4d;
   line-height: 1.35;
 }
@@ -233,28 +233,15 @@
   color: #123c6a;
 }
 
-/* Platform detail blocks: keep header left, center the immediate metric lines below it */
-.analysis-response .narrative-text h4 + p,
-.analysis-response .narrative-text h4 + p + p,
-.analysis-response .narrative-text h4 + p + p + p {
-  text-align: center;
-}
-
-/* When platform headers come as ordered-list items, align immediate metric paragraphs to the right. */
-.analysis-response .narrative-text ol + p,
-.analysis-response .narrative-text ol + p + p,
-.analysis-response .narrative-text ol + p + p + p {
-  text-align: right;
-}
-
 .analysis-response .narrative-text ul,
 .analysis-response .narrative-text ol {
-  margin: 6px 0 14px 22px;
+  margin: 2px 0 4px 18px;
   padding: 0;
 }
 
 .analysis-response .narrative-text li {
-  margin: 4px 0;
+  margin: 0 0 2px;
+  line-height: 1.28;
 }
 
 .analysis-response .narrative-text strong {
@@ -265,7 +252,7 @@
 .analysis-response .narrative-text hr {
   border: 0;
   border-top: 1px solid #d8e3f0;
-  margin: 16px 0;
+  margin: 10px 0;
 }
 
 .analysis-chart-card {

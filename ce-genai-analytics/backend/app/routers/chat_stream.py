@@ -347,6 +347,14 @@ def scrub_sql_for_invalid_timestamp(sql: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+    # If DATE(date_col) fails due to malformed string values in the source,
+    # rewrite to SAFE_CAST(date_col AS DATE) for tolerant filtering.
+    cleaned = re.sub(
+        r"\bDATE\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        r"SAFE_CAST(\1 AS DATE)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return cleaned
 
 @router.get("/chat/stream")
@@ -526,7 +534,8 @@ async def chat_stream(
             try:
                 rows = execute_sql(sql, {})
             except Exception as ex:
-                if "Invalid timestamp: ''" in str(ex):
+                err_text = str(ex)
+                if "Invalid timestamp: ''" in err_text or "Invalid date" in err_text or "Invalid timestamp" in err_text:
                     # Drop stale/bad temporal artifacts and retry once.
                     clear_session(user_id, conversation_id)
                     sql = scrub_sql_for_invalid_timestamp(sql)

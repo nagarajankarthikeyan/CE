@@ -18,8 +18,8 @@ async def stream_chat_completion(prompt: str, system_prompt: str | None = None):
             {"role": "system", "content": effective_system_prompt},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        max_tokens=600,
+        temperature=0,
+        max_tokens=1400,
         stream=True
     )
 

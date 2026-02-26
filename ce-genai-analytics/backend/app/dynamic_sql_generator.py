@@ -18,49 +18,27 @@ CRITICAL RULES:
 - DO NOT explain
 - Only SELECT or WITH + SELECT
 - Table name: {TABLE_NAME}
-- Do NOT invent new metrics.
-- Only use columns that exist in schema.
-- Do NOT redefine conversions.
-- If user asks for performance, prioritize:
-    spend, clicks, impressions, CTR,
-    total_enrollments, cost_per_enrollment, enrollment_rate.
-- For generic "program performance" questions, aggregate at platform + datasource level by default.
-- Do NOT group by campaign unless user explicitly asks for campaign-level output.
-
+- Do NOT invent columns or metrics.
+- Use only columns provided in the schema context.
+- Keep logic dynamic; do not hard-code question-specific templates.
+- Select only columns needed to answer the question.
+- Do not add unrelated dimensions to SELECT/GROUP BY unless user explicitly asks for a breakdown by that dimension.
+- Always include LIMIT 100 unless user explicitly requests more.
+- For aggregate "how much" questions, return analysis-ready output:
+  include an overall total plus a meaningful breakdown dimension when available.
 
 DATA RULES:
 - Columns are already structured (NOT JSON)
-- Use SAFE_CAST(column AS FLOAT64) when needed
+- Use SAFE_CAST when numeric casting is needed
 - Use SAFE_DIVIDE for ratios
-- Never use INT casts unless necessary
-- Prefer FLOAT64
+- Guard all ratio denominators with NULLIF(..., 0)
 
 DATE HANDLING:
-- Date column name: Date
-- Use:
-    EXTRACT(QUARTER FROM Date)
-    EXTRACT(YEAR FROM Date)
-- For week logic, weeks must run Monday-Sunday.
-- Always use explicit Monday-based week functions in BigQuery:
-    DATE_TRUNC(Date, WEEK(MONDAY))
-    EXTRACT(WEEK(MONDAY) FROM Date)
-- Do NOT use default WEEK behavior that starts on Sunday.
-- For relative weekly windows, use these exact boundaries:
-    this_week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
-    last_week_start = DATE_SUB(DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)), INTERVAL 7 DAY)
-    last_week_end = DATE_SUB(DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)), INTERVAL 1 DAY)
-- If user asks "last week", filter:
-    Date BETWEEN last_week_start AND last_week_end
-- If user asks "this week", filter:
-    Date BETWEEN this_week_start AND CURRENT_DATE()
-- If user asks "yesterday", filter:
-    Date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
-- If user asks "last month", filter:
-    Date >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH)
-    AND Date < DATE_TRUNC(CURRENT_DATE(), MONTH)
-- If user asks "this month" or "month-to-date", filter:
-    Date BETWEEN DATE_TRUNC(CURRENT_DATE(), MONTH) AND CURRENT_DATE()
-- Never use WEEK without MONDAY in DATE_TRUNC/EXTRACT.
+- Identify the correct date/timestamp column from schema.
+- For filtering, prefer SAFE_CAST(<date_or_timestamp_column> AS DATE) to avoid failures from malformed string values.
+- For "last week", use Monday-Sunday boundaries via WEEK(MONDAY).
+- For relative periods ("yesterday", "this month", "last month", etc.), use CURRENT_DATE()-based filters dynamically.
+- For trend/time-series questions without an explicit date range, default to the last 30 days ending today.
 
 AGGREGATION RULES:
 - SUM(column)
@@ -68,50 +46,53 @@ AGGREGATION RULES:
 - MAX(column)
 - MIN(column)
 - COUNT(*)
+- For broad performance questions (e.g., "how did the program perform"), aggregate at an overall level
+  or a small number of dimensions (max 2) unless the user asked for deeper granularity.
+- For broad performance questions with a time window, include BOTH:
+  1) an overall total row, and
+  2) a concise breakdown by one natural marketing dimension (such as source/channel/platform-like field),
+  in the same query (e.g., UNION ALL total row) so analysis can show totals + breakdown.
+- Keep the breakdown dynamic: infer the best dimension from available schema and question context.
+- If the user asks for more detail (e.g., detailed breakout/breakdown), include up to two relevant breakdown dimensions
+  and keep the query compact with a total row.
+- For spend trend questions:
+  - return a time series using DATE(<date_col>) as the x-axis grain (daily unless user asks weekly/monthly),
+  - include one breakdown dimension when relevant (platform/source/channel),
+  - include a total series/row computed in SQL when possible.
+  - use SAFE_CAST for spend aggregation.
+  - avoid NULL literals for breakdown labels in UNION ALL; use a string label such as 'TOTAL' for compatibility.
+  - when using UNION ALL and final ORDER BY, ensure ordering references selected columns only.
+- For spend-only questions with a time window, include both total and breakdown rows in one result when feasible.
+- For spend-only questions without explicit breakdown dimension, infer one from schema (channel/platform/source/campaign/region priority)
+  and return both total and breakdown rows.
+- For spend-only questions, avoid returning only a single total unless the user explicitly requests only total.
+- Prefer SQL shape:
+  - detail rows grouped by inferred dimension(s), plus
+  - one TOTAL row (UNION ALL or equivalent),
+  - ordered by spend descending.
+- For "what are all <dimension>" / "list all <dimension>" questions (e.g., sources, platforms, campaigns),
+  do not return DISTINCT-only lists by default.
+  Return grouped results with COUNT(*) AS row_count, ordered by row_count DESC (and include LIMIT 100).
+  Optionally include one relevant aggregate metric (like SUM(spend)) only when it clearly fits the question.
+- For program performance breakdown questions (time-window + platform/source/channel style analysis),
+  include core scale and efficiency metrics when the needed base columns exist:
+  - scale: spend, impressions, clicks
+  - efficiency: CTR, CPC, CPM
+  - outcomes: total_enrollments and enrollment components where available
+  - enrollment efficiency: cost_per_enrollment (CPE), enrollment_rate
+- Compute these dynamically from available columns; do not invent missing metrics.
+- If both grouped rows and overall totals are needed, return both in one query.
 
-DERIVED METRICS:
-- CTR = SAFE_DIVIDE(SUM(Clicks), SUM(Impressions)) * 100
-- total_enrollments = (
-    SAFE_CAST(SUM(enrollment_completes) AS FLOAT64)
-    + SAFE_CAST(SUM(call_enrollments) AS FLOAT64)
-    + SAFE_CAST(SUM(enrollment_completes_views) AS FLOAT64)
-  )
-- cost_per_enrollment = SAFE_DIVIDE(SUM(spend), total_enrollments)
-- enrollment_rate = SAFE_DIVIDE(total_enrollments, SUM(clicks)) * 100
-
-PROGRAM PERFORMANCE QUERY SHAPE (IMPORTANT):
-- For "how did the program perform last week" and similar weekly performance asks:
-  1) Build a base CTE aggregated by platform, datasource.
-  2) Build a detail CTE that computes ctr, cpc, cpm, total_enrollments, cpe.
-  3) Return detail rows UNION ALL a TOTAL row ("TOTAL" platform, "ALL" datasource) where totals are recomputed from SUMs.
-  4) Include spend, impressions, clicks, ctr, cpc, cpm,
-     enrollment_completes, call_enrollments, enrollment_completes_views,
-     total_enrollments, cpe.
-  5) Apply Monday-Sunday last-week bounds.
-  6) LIMIT 100.
-- Prefer explicit casts in aggregates:
-    SUM(SAFE_CAST(spend AS NUMERIC)),
-    SUM(SAFE_CAST(impressions AS INT64)),
-    SUM(SAFE_CAST(clicks AS INT64)).
-- Use NULLIF(denominator, 0) inside SAFE_DIVIDE for ratio safety.
-
-SPEND BREAKDOWN SHAPE (IMPORTANT):
-- For spend-only questions with a time window (e.g., "how much did we spend yesterday/last week/last month"),
-  return a dynamic breakdown and total in one query:
-  1) Aggregate detail by platform, datasource with SUM(CAST(spend AS NUMERIC)) AS spend.
-  2) UNION ALL a TOTAL row: platform='TOTAL', datasource='ALL', SUM(spend).
-  3) ORDER BY spend DESC and LIMIT 100.
-- If business line is mentioned (e.g., Energy), include that filter.
-- Keep this dynamic: infer the time range from the question; do not hardcode specific dates.
-- If user asks for a specific source/platform (e.g., Meta/Facebook/Instagram),
-  include source filtering in WHERE using case-insensitive logic, e.g.:
-    LOWER(COALESCE(datasource, '')) IN ('facebook','meta','instagram')
-    OR LOWER(COALESCE(platform, '')) LIKE '%meta%'
-    OR LOWER(COALESCE(platform, '')) LIKE '%facebook%'
-    OR LOWER(COALESCE(platform, '')) LIKE '%instagram%'
-- For source-specific spend asks ("how much was spent on meta this month"),
-  return a single summarized row with spend and explicit start/end dates:
-    SELECT '<label>' AS period, start_date, end_date, SUM(spend) AS spend ...
+SEMANTIC BUSINESS RULES:
+- ROAS stands for Return on Ad Spend. Compute as SAFE_DIVIDE(revenue, ad_spend).
+- In Paid Search (SA360), campaign names containing 'NB' indicate non-brand campaigns.
+  These are incremental-growth campaigns and are often more expensive than branded campaigns.
+- Call tracking conversions are fully credited to SA360 and should be treated as supplemental conversion volume.
+  Do not treat missing delivery/performance attributes for call rows as omitted/invalid data.
+- Total enrollments must include all enrollment columns when available:
+  enrollment_completes + call_enrollments + enrollment_completes_views.
+- For Home Services totals, include all relevant action columns when available:
+  hs_request_estimate_submit + hs_request_estimate_submit_views + hs_schedule_service_submit.
 
 IMPORTANT:
 Return clean BigQuery SQL only.
@@ -121,38 +102,6 @@ def generate_sql(question: str, schema_fields) -> str:
     """
     Uses GPT to dynamically generate BigQuery SQL.
     """
-
-    q = (question or "").strip().lower()
-
-    if (
-        any(k in q for k in ["spend", "spent", "spending", "cost"])
-        and any(k in q for k in ["meta", "facebook", "instagram"])
-        and any(k in q for k in ["this month", "month-to-date", "mtd"])
-    ):
-        return f"""SELECT
-  'Meta (Facebook) MTD' AS period,
-  DATE_TRUNC(CURRENT_DATE(), MONTH) AS start_date,
-  CURRENT_DATE() AS end_date,
-  SUM(SAFE_CAST(spend AS NUMERIC)) AS spend
-FROM {TABLE_NAME}
-WHERE DATE(date) BETWEEN DATE_TRUNC(CURRENT_DATE(), MONTH) AND CURRENT_DATE()
-  AND (
-    LOWER(COALESCE(datasource, '')) IN ('facebook', 'meta', 'instagram')
-    OR LOWER(COALESCE(platform, '')) LIKE '%meta%'
-    OR LOWER(COALESCE(platform, '')) LIKE '%facebook%'
-    OR LOWER(COALESCE(platform, '')) LIKE '%instagram%'
-  )
-LIMIT 100"""
-
-    if any(k in q for k in ["all sources", "what are all the sources", "list sources", "data sources", "datasource"]):
-        return f"""SELECT
-  datasource,
-  COUNT(*) AS row_count,
-  SUM(CAST(spend AS NUMERIC)) AS total_spend
-FROM {TABLE_NAME}
-GROUP BY datasource
-ORDER BY total_spend DESC
-LIMIT 100"""
 
     # Normalize schema safely
     if isinstance(schema_fields, dict):

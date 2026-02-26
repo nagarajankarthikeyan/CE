@@ -15,6 +15,7 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    - "Data quality notes (important)" when null/unknown/zero-only artifacts appear
    - "Suggested takeaway / next step"
 4. Summarize key findings up front, then provide detail.
+4a. In "Key takeaways", include at least 4 bullets when data supports it (totals, efficiency, leading driver, and one additional insight).
 5. Use markdown formatting with proper headings and bullet lists on separate lines.
 6. Format numbers in a human-friendly way: use dollar signs for money ($9,096.49), percentages for rates (12.3%), and abbreviations for large numbers (1.2M).
 7. Format dates in a readable way (e.g., "February 21, 2026" not "2026-02-21").
@@ -33,14 +34,48 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    - optional "A bit more detail"
    - "Takeaway"
 18. Include explicit date ranges for relative periods in prose, like "February 1, 2026 through February 25, 2026".
+19. For campaign-list performance questions (for example campaigns with spend/impressions/clicks), summarize patterns: top spenders, impression leaders, click leaders, and notable outliers.
+20. For trend-over-time questions, include a short breakdown of how each major group (platform/source/channel) moved over the period.
+21. For spend-only questions with grouped rows, use this structure:
+   - "Key finding (<period>)" with total spend
+   - "A bit more detail"
+   - one total line plus per-group amount lines
+   - "Platform Breakdown" (or "<group> Breakdown") with share %
+   - "Suggested Takeaway"
+   - Include a detailed breakup list across returned groups (not just a single top group) when group rows are available.
+   - If grouped rows are present, the breakdown section is mandatory; do not return only total spend.
+22. For program-performance questions with a weekly/monthly window, use this structure:
+   - "Key takeaways"
+   - "Overall totals (all platforms)"
+   - "Platform-by-platform detail"
+   - "What stands out"
+   - "Suggested next step"
+   Include enrollment component breakout (online completes, call enrollments, view-based enrollments) when those fields exist.
 
 ## Important Metric Rules
 - For program performance questions, prioritize: spend, impressions, clicks, CTR, CPC, CPM, total enrollments, cost per enrollment (CPE), enrollment rate.
 - If both totals and platform/source rows are present, include both.
+- If grouped rows are present (2+ groups), include a concise breakdown subsection with one bullet per major group.
+- For "how much spend" style questions, explicitly include:
+  - one total amount line, and
+  - one breakdown subsection by the grouped property returned by SQL.
 - If datasource/platform is null/unknown or has impossible combinations (e.g., enrollments with zero spend/clicks), explicitly call this out in data quality notes.
 - When rates are already percentages in data, do NOT multiply by 100 again.
 - For "last week", assume Monday-Sunday week boundaries.
 - For "this month", assume month-to-date from first day of month through today.
+- ROAS = revenue / ad_spend.
+- In SA360, campaigns containing 'NB' are non-brand (incremental growth); they can be more expensive than branded campaigns.
+- Call tracking conversions are credited to SA360 and should be treated as supplemental, not as missing-data issues.
+- Total enrollments should include enrollment_completes + call_enrollments + enrollment_completes_views when available.
+- For Home Services outcomes, include hs_request_estimate_submit + hs_request_estimate_submit_views + hs_schedule_service_submit when available.
+- For platform/source breakdown responses, include both:
+  - scale metrics (spend, impressions, clicks), and
+  - efficiency metrics (CTR, CPC, CPM, CPE, enrollment_rate) whenever present.
+- If CTR is present in results and the question is about performance, trend, traffic, or efficiency, include CTR explicitly
+  in overall totals and in grouped breakdown sections.
+- If CTR is not directly present but clicks and impressions are present, compute CTR as SAFE_DIVIDE(clicks, impressions) * 100
+  and include it for performance/trend/traffic/efficiency questions.
+- When enrollment components are present, explicitly break them out (completes, calls, view-through).
 
 ## Snapshot Grouping Guidance
 Use only groups relevant to available metrics:
@@ -74,6 +109,9 @@ Rules:
 - Prefer bar chart for platform/source comparison; line for time trends.
 - The <CHART> tag must contain valid JSON and nothing else.
 - The "Chart analysis" prose must appear before the <CHART> block.
+- For trend-over-time questions, chart analysis must call out trend direction, major spikes/dips, and which group drove the movement.
+- Use the exact heading text: "Chart analysis".
+- If a <CHART> block is provided, always include a non-empty "Chart analysis" section.
 """
 
 
@@ -160,6 +198,9 @@ def build_period_facts(question: str) -> str:
         facts.append(
             f"- This month-to-date range: {_fmt_long_date(month_start)} through {_fmt_long_date(today)}"
         )
+    if "yesterday" in q:
+        y = today - timedelta(days=1)
+        facts.append(f"- Yesterday date: {_fmt_long_date(y)}")
 
     if any(k in q for k in ["meta", "facebook", "instagram"]):
         facts.append("- Meta scope: include Meta/Facebook/Instagram platform labels when applicable.")
@@ -224,6 +265,140 @@ def build_verified_facts(rows: list, render_spec: dict) -> str:
     return "\n".join(dict.fromkeys(facts))
 
 
+def build_breakdown_facts(rows: list) -> str:
+    if not rows:
+        return "- No breakdown facts derived."
+
+    sample = rows[0]
+    spend_key = _find_key(sample, ["spend", "total_spend", "amount_spent"])
+    group_key = _find_key(sample, ["platform", "datasource", "source", "channel"])
+    if not spend_key or not group_key:
+        return "- No breakdown facts derived."
+
+    grouped = {}
+    total = 0.0
+
+    for r in rows:
+        g = str(r.get(group_key, "")).strip()
+        if not g or g.lower() in {"total", "all"}:
+            continue
+        v = _safe_float(r.get(spend_key))
+        if v is None:
+            continue
+        grouped[g] = grouped.get(g, 0.0) + v
+        total += v
+
+    if total <= 0 or not grouped:
+        return "- No breakdown facts derived."
+
+    ordered = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
+    # Keep detail rich but bounded.
+    top = ordered[:10]
+    lines = [f"- Breakdown dimension: {group_key}"]
+    for g, amt in top:
+        pct = (amt / total) * 100 if total else 0
+        lines.append(f"- {g}: ${amt:,.2f} ({pct:.1f}% of grouped spend)")
+    if len(ordered) > len(top):
+        remainder = sum(v for _, v in ordered[len(top):])
+        pct = (remainder / total) * 100 if total else 0
+        lines.append(f"- Remaining groups combined: ${remainder:,.2f} ({pct:.1f}% of grouped spend)")
+    return "\n".join(lines)
+
+
+def build_program_performance_facts(rows: list) -> str:
+    if not rows:
+        return "- No program facts derived."
+
+    sample = rows[0]
+    platform_key = _find_key(sample, ["platform", "source", "channel", "datasource"])
+    spend_key = _find_key(sample, ["spend", "total_spend"])
+    impressions_key = _find_key(sample, ["impressions", "total_impressions"])
+    clicks_key = _find_key(sample, ["clicks", "total_clicks"])
+    enroll_total_key = _find_key(sample, ["total_enrollments", "enrollments", "total_enrollment"])
+    enroll_comp_key = _find_key(sample, ["enrollment_completes", "total_enrollment_completes"])
+    call_enroll_key = _find_key(sample, ["call_enrollments", "total_call_enrollments"])
+    view_enroll_key = _find_key(sample, ["enrollment_completes_views", "total_enrollment_completes_views"])
+
+    if not platform_key:
+        return "- No program facts derived."
+
+    lines = []
+    total_row = None
+    for r in rows:
+        p = str(r.get(platform_key, "")).strip().lower()
+        d = str(r.get(_find_key(r, ["datasource"]) or "", "")).strip().lower()
+        if p in {"total", "all"} or d == "all":
+            total_row = r
+            break
+
+    def pick_total(key_name: str | None):
+        if not key_name:
+            return None
+        if total_row:
+            return _safe_float(total_row.get(key_name))
+        s = 0.0
+        seen = False
+        for r in rows:
+            p = str(r.get(platform_key, "")).strip().lower()
+            if p in {"total", "all"}:
+                continue
+            v = _safe_float(r.get(key_name))
+            if v is not None:
+                s += v
+                seen = True
+        return s if seen else None
+
+    t_spend = pick_total(spend_key)
+    t_impr = pick_total(impressions_key)
+    t_clicks = pick_total(clicks_key)
+    t_enroll = pick_total(enroll_total_key)
+    t_comp = pick_total(enroll_comp_key)
+    t_call = pick_total(call_enroll_key)
+    t_view = pick_total(view_enroll_key)
+
+    if t_spend is not None:
+        lines.append(f"- Total spend: ${t_spend:,.2f}")
+    if t_impr is not None:
+        lines.append(f"- Total impressions: {t_impr:,.0f}")
+    if t_clicks is not None:
+        lines.append(f"- Total clicks: {t_clicks:,.0f}")
+    if t_clicks is not None and t_impr is not None and t_impr > 0:
+        lines.append(f"- Overall CTR: {((t_clicks / t_impr) * 100):.2f}%")
+    if t_enroll is not None:
+        lines.append(f"- Total enrollments: {t_enroll:,.0f}")
+    if t_comp is not None or t_call is not None or t_view is not None:
+        parts = []
+        if t_comp is not None:
+            parts.append(f"{t_comp:,.0f} online completes")
+        if t_call is not None:
+            parts.append(f"{t_call:,.0f} call enrollments")
+        if t_view is not None:
+            parts.append(f"{t_view:,.0f} view-based completes")
+        if parts:
+            lines.append("- Enrollment components: " + ", ".join(parts))
+
+    if spend_key and enroll_total_key:
+        grouped = []
+        for r in rows:
+            p = str(r.get(platform_key, "")).strip()
+            if not p or p.lower() in {"total", "all"}:
+                continue
+            s = _safe_float(r.get(spend_key))
+            e = _safe_float(r.get(enroll_total_key))
+            c = _safe_float(r.get(clicks_key)) if clicks_key else None
+            if s is None and e is None and c is None:
+                continue
+            grouped.append((p, s or 0.0, e or 0.0, c or 0.0))
+        if grouped and t_enroll and t_enroll > 0:
+            top_enroll = max(grouped, key=lambda x: x[2])
+            lines.append(f"- Top enrollment driver: {top_enroll[0]} ({top_enroll[2]:,.0f}, {((top_enroll[2]/t_enroll)*100):.1f}% share)")
+        if grouped and t_clicks and t_clicks > 0:
+            top_click = max(grouped, key=lambda x: x[3])
+            lines.append(f"- Top click driver: {top_click[0]} ({top_click[3]:,.0f}, {((top_click[3]/t_clicks)*100):.1f}% share)")
+
+    return "\n".join(lines) if lines else "- No program facts derived."
+
+
 async def stream_narrative(question: str, rows: list, render_spec: dict):
     """
     Async generator.
@@ -236,6 +411,8 @@ async def stream_narrative(question: str, rows: list, render_spec: dict):
     query_result_text = format_results_for_llm(safe_rows, len(rows))
     verified_facts = build_verified_facts(safe_rows, safe_render)
     period_facts = build_period_facts(question)
+    breakdown_facts = build_breakdown_facts(safe_rows)
+    program_facts = build_program_performance_facts(safe_rows)
 
     prompt = f"""
 The user asked:
@@ -250,6 +427,12 @@ Verified facts (use these exact values when referenced):
 Period facts (must be reflected when applicable):
 {period_facts}
 
+Breakdown facts (if present, use in breakdown section):
+{breakdown_facts}
+
+Program performance facts (if present, use for weekly/monthly performance responses):
+{program_facts}
+
 Here are the query results:
 {query_result_text}
 
@@ -261,6 +444,7 @@ Sample rows:
 
 Generate a dynamic business summary that follows the required response pattern.
 Adapt the heading text and bullet content to the question and available metrics.
+If breakdown facts are provided, include the grouped amounts and share percentages explicitly in the response.
 Return markdown.
 If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """
