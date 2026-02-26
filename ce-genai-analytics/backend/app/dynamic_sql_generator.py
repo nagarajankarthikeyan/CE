@@ -53,6 +53,18 @@ AGGREGATION RULES:
 - COUNT(*)
 - For broad performance questions (e.g., "how did the program perform"), aggregate at an overall level
   or a small number of dimensions (max 2) unless the user asked for deeper granularity.
+- For "<metric> by <dimension>" questions (e.g., "CTR by campaign"):
+  - GROUP BY the requested dimension.
+  - Return one row per dimension value (breakout).
+  - For derived metrics like CTR, include supporting base metrics when available:
+    clicks, impressions, and CTR = SAFE_DIVIDE(clicks, impressions) * 100.
+  - Order by the requested metric DESC unless the user asks otherwise.
+  - For CTR by campaign specifically, prefer this dynamic pattern:
+    1) build a base CTE aggregated by campaign and source/platform context,
+    2) compute CTR from aggregated clicks/impressions in a second CTE,
+    3) return campaign breakout rows plus one TOTAL row via UNION ALL,
+    4) filter out zero-impression rows when appropriate,
+    5) cap detail rows so total output remains within LIMIT 100.
 - For broad performance questions with a time window, include BOTH:
   1) an overall total row, and
   2) a concise breakdown by one natural marketing dimension (such as source/channel/platform-like field),

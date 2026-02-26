@@ -16,6 +16,7 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    - "Suggested takeaway / next step"
 4. Summarize key findings up front, then provide detail.
 4a. In "Key takeaways", include at least 4 bullets when data supports it (totals, efficiency, leading driver, and one additional insight).
+4b. When available, "Key takeaways" must explicitly include CTR.
 5. Use markdown formatting with proper headings and bullet lists on separate lines.
 6. Format numbers in a human-friendly way: use dollar signs for money ($9,096.49), percentages for rates (12.3%), and abbreviations for large numbers (1.2M).
 7. Format dates in a readable way (e.g., "February 21, 2026" not "2026-02-21").
@@ -51,9 +52,39 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    - "What stands out"
    - "Suggested next step"
    Include enrollment component breakout (online completes, call enrollments, view-based enrollments) when those fields exist.
+23. Expand platform/source acronyms on first mention when present in results:
+   - SA360 -> "SA360 (Search Ads 360)"
+   - DV360 -> "DV360 (Display & Video 360)"
+   - META -> "META (Facebook/Instagram)"
+   After first mention, short form is fine.
+24. For CTR-by-campaign style questions, use this response structure dynamically (adapt labels/period/business line from data):
+   - "<Metric> by <dimension> (<period>) — <business line/topic>"
+   - "Key takeaways"
+   - "Overall performance (all campaigns)"
+   - "Campaign-by-campaign highlights"
+   - "Highest reach (largest impression drivers)"
+   - "Best CTRs (engagement leaders)"
+   - platform-specific subsection when present (for example "Meta (Facebook/Instagram) performance")
+   - "Lowest CTRs (potential creative/placement mismatch)" when low-CTR rows exist
+   - "Practical takeaway"
+   Keep bullets concise and metric-backed (impressions, clicks, CTR, spend).
 
 ## Important Metric Rules
 - For program performance questions, prioritize: spend, impressions, clicks, CTR, CPC, CPM, total enrollments, cost per enrollment (CPE), enrollment rate.
+- When available in query results, always include all three in the response:
+- When available in query results, always include all three in the response:
+  - Clicks
+  - Total Enrollments
+  - Enrollment Rate
+- Enrollment Rate is mandatory in the final response:
+  - include an explicit "Enrollment Rate" line in Key takeaways and overall section,
+  - include per-group enrollment rate in breakdown sections when grouped rows exist,
+  - if enrollment rate is not directly provided, compute as total_enrollments / clicks * 100 when possible,
+  - if it cannot be computed from available fields, still show "Enrollment Rate: N/A" (do not omit it).
+- Include enrollment rate in every relevant section:
+  - Key takeaways
+  - Overall totals/performance
+  - Each grouped/platform breakdown row when grouped rows exist.
 - If both totals and platform/source rows are present, include both.
 - If grouped rows are present (2+ groups), include a concise breakdown subsection with one bullet per major group.
 - For "how much spend" style questions, explicitly include:
@@ -76,6 +107,13 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
 - If CTR is not directly present but clicks and impressions are present, compute CTR as SAFE_DIVIDE(clicks, impressions) * 100
   and include it for performance/trend/traffic/efficiency questions.
 - When enrollment components are present, explicitly break them out (completes, calls, view-through).
+- For "<metric> by <dimension>" responses (for example CTR by campaign), provide a clear breakout list by that dimension
+  and include the metric plus its base drivers when applicable (CTR with clicks/impressions).
+- For CTR-by-campaign responses specifically:
+  - include overall totals (impressions, clicks, CTR, spend) near the top,
+  - include at least one "highest reach" and one "best CTR" breakout list when data supports it,
+  - call out lowest-CTR campaign patterns when present,
+  - end with a practical recommendation tied to objective (engagement vs awareness).
 
 ## Snapshot Grouping Guidance
 Use only groups relevant to available metrics:
@@ -366,6 +404,8 @@ def build_program_performance_facts(rows: list) -> str:
         lines.append(f"- Overall CTR: {((t_clicks / t_impr) * 100):.2f}%")
     if t_enroll is not None:
         lines.append(f"- Total enrollments: {t_enroll:,.0f}")
+    if t_enroll is not None and t_clicks is not None and t_clicks > 0:
+        lines.append(f"- Overall enrollment rate: {((t_enroll / t_clicks) * 100):.2f}%")
     if t_comp is not None or t_call is not None or t_view is not None:
         parts = []
         if t_comp is not None:
@@ -445,6 +485,7 @@ Sample rows:
 Generate a dynamic business summary that follows the required response pattern.
 Adapt the heading text and bullet content to the question and available metrics.
 If breakdown facts are provided, include the grouped amounts and share percentages explicitly in the response.
+Mandatory final check before responding: include "Enrollment Rate" explicitly in the output (or "Enrollment Rate: N/A" if not computable).
 Return markdown.
 If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """
