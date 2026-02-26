@@ -36,7 +36,16 @@ def prettify_value(val):
     if isinstance(val, (date, datetime)):
         return val.isoformat()
     if isinstance(val, str):
-        return val.replace("_", " ").strip()
+        cleaned = val.replace("_", " ").strip()
+        normalized = cleaned.lower()
+        platform_map = {
+            "sa360": "SA360 (Search Ads 360)",
+            "dv360": "DV360 (Display & Video 360)",
+            "meta": "META (Facebook/Instagram)",
+            "facebook": "META (Facebook/Instagram)",
+            "google": "SA360 (Search Ads 360)",
+        }
+        return platform_map.get(normalized, cleaned)
     return val
 
 
@@ -308,7 +317,7 @@ def build_render_spec(question: str, rows: list):
             "chart": {},
             "ranked_list": [],
             "bullets": [],
-            "narrative": "Here is a high-level summary of performance."
+            "narrative": ""
         }
 
     # =========================

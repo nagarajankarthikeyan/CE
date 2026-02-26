@@ -27,6 +27,7 @@ interface UiChartModel {
   title?: string;
   data: ChartConfiguration['data'];
   options: ChartOptions;
+  minWidthPx?: number;
 }
 
 const CHART_COLORS = [
@@ -139,6 +140,7 @@ export class ChatComponent implements OnInit {
 
     const url = `/api/chat/stream?${params.toString()}`;
     const es = new EventSource(url);
+    let pushedStructuredRender = false;
 
     let hasReceivedValidEvent = false;
 
@@ -233,21 +235,20 @@ export class ChatComponent implements OnInit {
             }
           }
           this.lastRenderSpecForNarrative = renderSpec;
-          const hasRenderableStructured =
+          const hasStructuredNonNarrative =
             (Array.isArray(renderSpec?.kpis) && renderSpec.kpis.length > 0) ||
             (Array.isArray(renderSpec?.ranked_list) && renderSpec.ranked_list.length > 0) ||
             (Array.isArray(renderSpec?.bullets) && renderSpec.bullets.length > 0) ||
-            (Array.isArray(renderSpec?.table?.rows) && renderSpec.table.rows.length > 0 && this.shouldRenderTable(last)) ||
-            (typeof renderSpec?.narrative === 'string' && renderSpec.narrative.trim().length > 0);
+            (Array.isArray(renderSpec?.table?.rows) && renderSpec.table.rows.length > 0 && this.shouldRenderTable(last));
 
-          if (hasRenderableStructured) {
+          if (hasStructuredNonNarrative) {
+            pushedStructuredRender = true;
             this.messages.push({
               role: 'bot',
               render: renderSpec,
               queryText: last
             });
           }
-          this.isStreaming = false;
           this.cd.detectChanges();
           this.scrollToBottom();
         } catch (err) {
@@ -265,7 +266,7 @@ export class ChatComponent implements OnInit {
           this.streamingText += e.data;
           // Render streaming text with the same formatter used for final content
           // so layout does not jump when the stream completes.
-          this.streamingHtml = this.renderNarrativeHtml(this.streamingText);
+          this.streamingHtml = this.renderNarrativeHtml(this.streamingText, this.lastUserMessage);
           this.cd.detectChanges();
           this.scrollToBottom();
         });
@@ -276,7 +277,7 @@ export class ChatComponent implements OnInit {
       hasReceivedValidEvent = true;
       setTimeout(() => {
         this.zone.run(() => {
-          this.finishStreaming(es);
+          this.finishStreaming(es, pushedStructuredRender);
         });
       }, 0);
     });
@@ -301,7 +302,7 @@ export class ChatComponent implements OnInit {
     };
   }
 
-  private finishStreaming(es: EventSource) {
+  private finishStreaming(es: EventSource, pushedStructuredRender: boolean = false) {
     es.close();
 
     if (this.streamingText.trim()) {
@@ -314,8 +315,17 @@ export class ChatComponent implements OnInit {
       this.messages.push({
         role: 'bot',
         text: parsed.cleanContent,
-        textHtml: this.renderNarrativeHtml(parsed.cleanContent),
+        textHtml: this.renderNarrativeHtml(parsed.cleanContent, this.lastUserMessage),
         analysisCharts: chartSpecs.map((c) => this.toUiChartModel(c)),
+        queryText: this.lastUserMessage
+      });
+    } else if (!pushedStructuredRender && this.lastRenderSpecForNarrative?.narrative) {
+      // Fallback for cases where backend sends only render payload without stream text.
+      this.messages.push({
+        role: 'bot',
+        text: this.lastRenderSpecForNarrative.narrative,
+        textHtml: this.renderNarrativeHtml(this.lastRenderSpecForNarrative.narrative, this.lastUserMessage),
+        analysisCharts: [],
         queryText: this.lastUserMessage
       });
     }
@@ -360,12 +370,12 @@ export class ChatComponent implements OnInit {
     return k.value;
   }
 
-  getNarrativeHtml(text: string): string {
+  getNarrativeHtml(text: string, questionText: string = ''): string {
     if (!text) return '';
-    return this.renderNarrativeHtml(text);
+    return this.renderNarrativeHtml(text, questionText);
   }
 
-  private renderNarrativeHtml(text: string): string {
+  private renderNarrativeHtml(text: string, questionText: string = ''): string {
     const cleanText = this.parseChartSpecs(text).cleanContent;
     const normalized = this.normalizeMarkdown(cleanText);
     const html = marked.parse(normalized) as string;
@@ -387,7 +397,50 @@ export class ChatComponent implements OnInit {
       .replace(/<li[^>]*>\s*<h[1-6][^>]*>\s*<\/h[1-6]>\s*<\/li>/gi, '')
       .replace(/<ul>\s*<\/ul>/gi, '')
       .replace(/<ol>\s*<\/ol>/gi, '');
-    return this.postProcessNarrativeHtml(cleaned);
+    const expandedNames = cleaned
+      .replace(/\bSA360\b(?!\s*\()/g, 'SA360 (Search Ads 360)')
+      .replace(/\bDV360\b(?!\s*\()/g, 'DV360 (Display & Video 360)')
+      .replace(/\bMETA\b(?!\s*\()/g, 'META (Facebook/Instagram)');
+    const normalizedHtml = this.postProcessNarrativeHtml(expandedNames);
+    if (this.wantsExecutiveSummary(questionText)) {
+      return this.toExecutiveSummaryHtml(normalizedHtml);
+    }
+    return normalizedHtml;
+  }
+
+  private wantsExecutiveSummary(questionText: string): boolean {
+    const q = (questionText || '').toLowerCase();
+    return /\b(executive summary|summary in paragraph|paragraph form|one paragraph summary|brief summary)\b/.test(q);
+  }
+
+  private toExecutiveSummaryHtml(html: string): string {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div id="exec-root">${html}</div>`, 'text/html');
+    const root = doc.getElementById('exec-root');
+    if (!root) return html;
+
+    const heading = root.querySelector('h1,h2,h3,h4,h5,h6');
+    const title = 'Executive summary';
+
+    const texts = Array.from(root.querySelectorAll('p,li'))
+      .map((n) => (n.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter((t) => t && t.length > 2)
+      .filter((t) => !/^(key takeaway|key takeaways|overall performance|platform-by-platform detail|chart analysis|suggested next step)$/i.test(t));
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const t of texts) {
+      const key = t.toLowerCase().replace(/[^\w\s%$.-]/g, '');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(t);
+      if (deduped.length >= 8) break;
+    }
+
+    const paragraph = deduped.join(' ').trim();
+    if (!paragraph) return html;
+
+    return `<h3>${title}</h3><p>${paragraph}</p>`;
   }
 
   private postProcessNarrativeHtml(html: string): string {
@@ -603,6 +656,19 @@ export class ChatComponent implements OnInit {
       next.remove();
     });
 
+    // Merge parenthetical-only single-item UL into previous heading:
+    // "Spend trend analysis (January 27" + "- February 20, 2026)".
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const next = h.nextElementSibling;
+      if (!next || next.tagName !== 'UL') return;
+      const items = Array.from(next.querySelectorAll('li'));
+      if (items.length !== 1) return;
+      const litxt = cleanText(items[0].textContent || '');
+      if (!/^[A-Za-z]+\s+\d{1,2},\s+\d{4}\)$/.test(litxt)) return;
+      h.textContent = `${cleanText(h.textContent || '')} ${litxt}`;
+      next.remove();
+    });
+
     // Convert single-item date bullet list under Overview into paragraph.
     root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
       if (!/^overview$/i.test(cleanText(h.textContent || ''))) return;
@@ -644,6 +710,37 @@ export class ChatComponent implements OnInit {
   shouldRenderTable(question: string): boolean {
     const q = (question || '').toLowerCase();
     return /\b(table|tabular|rows?|columns?|spreadsheet|csv|grid|list all|show table|display table)\b/.test(q);
+  }
+
+  hasRenderableContent(render: any, queryText: string = ''): boolean {
+    if (!render || !render.render_type) return false;
+
+    if (render.render_type === 'mixed') {
+      const hasNarrative = typeof render.narrative === 'string' && render.narrative.trim().length > 0;
+      const hasTable = this.shouldRenderTable(queryText) && Array.isArray(render.table?.rows) && render.table.rows.length > 0;
+      return hasNarrative || hasTable;
+    }
+
+    if (render.render_type === 'table') {
+      const hasNarrative = typeof render.narrative === 'string' && render.narrative.trim().length > 0;
+      const hasTable = this.shouldRenderTable(queryText) && Array.isArray(render.table?.rows) && render.table.rows.length > 0;
+      return hasNarrative || hasTable;
+    }
+
+    if (render.render_type === 'ranked_list') {
+      return (Array.isArray(render.ranked_list) && render.ranked_list.length > 0) ||
+        (typeof render.narrative === 'string' && render.narrative.trim().length > 0);
+    }
+
+    if (render.render_type === 'narrative') {
+      return typeof render.narrative === 'string' && render.narrative.trim().length > 0;
+    }
+
+    if (render.render_type === 'kpi') {
+      return Array.isArray(render.kpis) && render.kpis.length > 0;
+    }
+
+    return true;
   }
 
   private normalizeMarkdown(text: string): string {
@@ -838,6 +935,15 @@ export class ChatComponent implements OnInit {
     return String(value);
   }
 
+  private normalizePlatformLabel(label: string): string {
+    const raw = (label || '').trim();
+    const low = raw.toLowerCase();
+    if (low === 'sa360' || low === 'google' || low === 'sa360 (google)') return 'SA360 (Search Ads 360)';
+    if (low === 'dv360') return 'DV360 (Display & Video 360)';
+    if (low === 'meta' || low === 'facebook' || low === 'meta (facebook)') return 'META (Facebook/Instagram)';
+    return raw;
+  }
+
   parseChartSpecs(content: string): { cleanContent: string; charts: ChartSpec[] } {
     const charts: ChartSpec[] = [];
     let cleanContent = content;
@@ -846,26 +952,9 @@ export class ChatComponent implements OnInit {
     let match: RegExpExecArray | null;
 
     while ((match = chartRegex.exec(content)) !== null) {
-      try {
-        const raw = match[1].trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-        const parsed = JSON.parse(raw);
-        if (parsed.type && parsed.data && parsed.xKey && parsed.yKeys) {
-          charts.push(parsed as ChartSpec);
-        }
-      } catch (e) {
-        try {
-          const raw = match[1].trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-          const start = raw.indexOf('{');
-          const end = raw.lastIndexOf('}');
-          if (start !== -1 && end > start) {
-            const parsed = JSON.parse(raw.slice(start, end + 1));
-            if (parsed.type && parsed.data && parsed.xKey && parsed.yKeys) {
-              charts.push(parsed as ChartSpec);
-            }
-          }
-        } catch (inner) {
-          console.error('Failed to parse chart spec:', inner);
-        }
+      const parsed = this.tryParseChartSpec(match[1]);
+      if (parsed) {
+        charts.push(parsed);
       }
     }
 
@@ -873,18 +962,9 @@ export class ChatComponent implements OnInit {
     if (!charts.length) {
       const openOnly = content.match(/<\s*CHART\s*>([\s\S]*)$/i);
       if (openOnly?.[1]) {
-        try {
-          const raw = openOnly[1].trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-          const start = raw.indexOf('{');
-          const end = raw.lastIndexOf('}');
-          if (start !== -1 && end > start) {
-            const parsed = JSON.parse(raw.slice(start, end + 1));
-            if (parsed.type && parsed.data && parsed.xKey && parsed.yKeys) {
-              charts.push(parsed as ChartSpec);
-            }
-          }
-        } catch (e) {
-          console.error('Failed to parse open chart spec:', e);
+        const parsed = this.tryParseChartSpec(openOnly[1]);
+        if (parsed) {
+          charts.push(parsed);
         }
       }
     }
@@ -894,14 +974,10 @@ export class ChatComponent implements OnInit {
       const looseJsonRegex = /\{[\s\S]*?"type"\s*:\s*"(bar|line|pie)"[\s\S]*?"data"\s*:\s*\[[\s\S]*?\][\s\S]*?"xKey"\s*:\s*"[^"]+"[\s\S]*?"yKeys"\s*:\s*\[[\s\S]*?\][\s\S]*?\}/g;
       const looseBlocks = content.match(looseJsonRegex) || [];
       for (const block of looseBlocks) {
-        try {
-          const parsed = JSON.parse(block.trim());
-          if (parsed.type && parsed.data && parsed.xKey && parsed.yKeys) {
-            charts.push(parsed as ChartSpec);
-            cleanContent = cleanContent.replace(block, '');
-          }
-        } catch (e) {
-          console.error('Failed to parse loose chart spec:', e);
+        const parsed = this.tryParseChartSpec(block);
+        if (parsed) {
+          charts.push(parsed);
+          cleanContent = cleanContent.replace(block, '');
         }
       }
     }
@@ -913,10 +989,78 @@ export class ChatComponent implements OnInit {
     return { cleanContent, charts };
   }
 
+  private tryParseChartSpec(rawContent: string): ChartSpec | null {
+    const raw = (rawContent || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    if (!raw) return null;
+
+    const direct = this.safeParseJson(raw);
+    if (this.isValidChartSpec(direct)) return direct as ChartSpec;
+
+    const balanced = this.extractBalancedJson(raw);
+    if (!balanced) return null;
+    const parsed = this.safeParseJson(balanced);
+    if (this.isValidChartSpec(parsed)) return parsed as ChartSpec;
+
+    return null;
+  }
+
+  private safeParseJson(value: string): any | null {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  private isValidChartSpec(parsed: any): boolean {
+    return !!(parsed && parsed.type && parsed.data && parsed.xKey && parsed.yKeys);
+  }
+
+  // Extract first balanced JSON object from a potentially incomplete stream.
+  private extractBalancedJson(value: string): string | null {
+    const start = value.indexOf('{');
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < value.length; i++) {
+      const ch = value[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') inString = false;
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return value.slice(start, i + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
   private toUiChartModel(spec: ChartSpec): UiChartModel {
     const xKey = spec.xKey || 'label';
     const yKeys = spec.yKeys?.length ? spec.yKeys : [{ key: 'value', label: 'Value' }];
-    const labels = spec.data.map((d) => String(d?.[xKey] ?? ''));
+    const labels = spec.data.map((d) => this.normalizePlatformLabel(String(d?.[xKey] ?? '')));
     const rotateTicks = labels.length > 6;
 
     const commonOptions: ChartOptions = {
@@ -971,6 +1115,14 @@ export class ChatComponent implements OnInit {
       };
     }
 
+    const barCount = labels.length || 1;
+    const maxBarThickness =
+      barCount >= 30 ? 8 :
+      barCount >= 20 ? 12 :
+      barCount >= 12 ? 18 : 28;
+    const widthPerPoint = spec.type === 'bar' ? 58 : 42;
+    const minWidthPx = Math.max(640, barCount * widthPerPoint);
+
     return {
       type: spec.type,
       title: spec.title,
@@ -983,13 +1135,17 @@ export class ChatComponent implements OnInit {
           borderColor: yk.color || CHART_COLORS[i % CHART_COLORS.length],
           borderWidth: spec.type === 'line' ? 2 : 1,
           borderRadius: spec.type === 'bar' ? 4 : 0,
+          maxBarThickness: spec.type === 'bar' ? maxBarThickness : undefined,
+          barPercentage: spec.type === 'bar' ? 0.72 : undefined,
+          categoryPercentage: spec.type === 'bar' ? 0.74 : undefined,
           pointRadius: spec.type === 'line' ? 3 : 0,
           pointHoverRadius: spec.type === 'line' ? 5 : 0,
           tension: spec.type === 'line' ? 0.35 : 0,
           fill: spec.type !== 'line'
         }))
       },
-      options: commonOptions
+      options: commonOptions,
+      minWidthPx
     };
   }
 

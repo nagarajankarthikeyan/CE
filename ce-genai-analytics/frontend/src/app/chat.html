@@ -32,7 +32,7 @@
 
     <!-- BOT STRUCTURED -->
     <div
-      *ngIf="m.role === 'bot' && m.render && ['kpi','mixed','ranked_list','table','chart','narrative'].includes(m.render.render_type)"
+      *ngIf="m.role === 'bot' && m.render && ['kpi','mixed','ranked_list','table','chart','narrative'].includes(m.render.render_type) && hasRenderableContent(m.render, m.queryText || '')"
       class="bubble bot analysis-response"
       [class.kpi-response]="m.render.render_type === 'kpi'"
     >
@@ -43,7 +43,7 @@
           {{ m.render.title }}
         </div>
 
-        <div class="kpi-row">
+        <div class="kpi-list">
           <div class="kpi-card executive" *ngFor="let k of m.render.kpis">
             <div class="kpi-label">{{ k.label }}</div>
             <div class="kpi-big-value">
@@ -55,15 +55,6 @@
 
       <!-- MIXED -->
       <div *ngIf="m.render.render_type === 'mixed'">
-
-        <div class="kpi-row" *ngIf="m.render.kpis?.length">
-          <div class="kpi-card executive" *ngFor="let k of m.render.kpis">
-            <div class="kpi-label">{{ k.label }}</div>
-            <div class="kpi-big-value">
-              {{ formatKpiValue(k) }}
-            </div>
-          </div>
-        </div>
 
         <table class="data-table" *ngIf="shouldRenderTable(m.queryText || '') && m.render.table?.rows?.length">
           <thead>
@@ -78,7 +69,7 @@
           </tbody>
         </table>
 
-        <div class="narrative-text" *ngIf="m.render.narrative" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
+        <div class="narrative-text" *ngIf="m.render.narrative" [innerHTML]="getNarrativeHtml(m.render.narrative, m.queryText || '')"></div>
       </div>
 
       <!-- RANKED LIST -->
@@ -111,7 +102,7 @@
 
 
 
-        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
+        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative, m.queryText || '')"></div>
 
       </div> -->
 
@@ -140,7 +131,7 @@
           </tbody>
         </table>
 
-        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
+        <div *ngIf="m.render.narrative" class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative, m.queryText || '')"></div>
 
       </div>
 
@@ -173,7 +164,7 @@
           {{ m.render.title }}
         </h3>
 
-        <div class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative)"></div>
+        <div class="narrative-text" [innerHTML]="getNarrativeHtml(m.render.narrative, m.queryText || '')"></div>
 
       </div>
 
@@ -181,18 +172,20 @@
 
     <!-- BOT STREAMING TEXT -->
     <div *ngIf="m.role === 'bot' && m.text" class="bubble bot analysis-response">
-      <div class="narrative-text" [innerHTML]="m.textHtml || getNarrativeHtml(m.text)"></div>
+      <div class="narrative-text" [innerHTML]="m.textHtml || getNarrativeHtml(m.text, m.queryText || '')"></div>
 
       <div *ngIf="m.analysisCharts?.length" class="render-block">
         <div class="analysis-chart-card" *ngFor="let chart of m.analysisCharts">
           <h3 class="render-title" *ngIf="chart.title">{{ chart.title }}</h3>
           <div class="analysis-chart-wrap">
-            <canvas
-              baseChart
-              [data]="chart.data"
-              [type]="chart.type"
-              [options]="chart.options"
-            ></canvas>
+            <div class="analysis-chart-inner" [style.min-width.px]="chart.minWidthPx || 640">
+              <canvas
+                baseChart
+                [data]="chart.data"
+                [type]="chart.type"
+                [options]="chart.options"
+              ></canvas>
+            </div>
           </div>
         </div>
       </div>
@@ -202,7 +195,7 @@
 
   <!-- STREAMING TEXT -->
   <div *ngIf="streamingText" class="bubble bot streaming analysis-response">
-    <div class="narrative-text" [innerHTML]="streamingHtml || getNarrativeHtml(streamingText)"></div>
+    <div class="narrative-text" [innerHTML]="streamingHtml || getNarrativeHtml(streamingText, lastUserMessage)"></div>
   </div>
 
   <!-- TYPING INDICATOR -->
