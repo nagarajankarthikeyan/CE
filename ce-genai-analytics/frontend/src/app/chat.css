@@ -244,6 +244,14 @@
   line-height: 1.28;
 }
 
+.analysis-response .narrative-text .narrative-metric-list {
+  margin: 4px 0 8px 18px;
+}
+
+.analysis-response .narrative-text .narrative-metric-list li {
+  margin: 0 0 3px;
+}
+
 .analysis-response .narrative-text strong {
   color: #0f335a;
   font-weight: 700;

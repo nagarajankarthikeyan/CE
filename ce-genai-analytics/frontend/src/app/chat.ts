@@ -401,6 +401,11 @@ export class ChatComponent implements OnInit {
     const narrativeStarterRegex = /\b(Overall|Today|This|In this|For this|Here)\b/;
 
     const cleanText = (value: string) => value.replace(/\s+/g, ' ').trim();
+    const isMetricParagraph = (el: Element | null): el is HTMLParagraphElement => {
+      if (!el || el.tagName !== 'P') return false;
+      const text = cleanText(el.textContent || '');
+      return /^[A-Za-z][A-Za-z0-9\s()/&%.-]{1,50}\s*:/.test(text);
+    };
     const canonicalHeading = (value: string): string => {
       const t = cleanText(value).toLowerCase();
       if (/^key takeaway(s)?$/.test(t)) return 'Key takeaway';
@@ -512,6 +517,64 @@ export class ChatComponent implements OnInit {
       if (!li) return;
       const replacement = doc.createTextNode(text);
       li.replaceChild(replacement, p);
+    });
+
+    // Dedupe repeated bullets within the same list (common in streamed retries).
+    root.querySelectorAll('ul,ol').forEach((list) => {
+      const seen = new Set<string>();
+      Array.from(list.children).forEach((child) => {
+        if (child.tagName !== 'LI') return;
+        const li = child as HTMLElement;
+        const key = cleanText(li.textContent || '')
+          .toLowerCase()
+          .replace(/[^\w\s%$.-]/g, '');
+        if (!key || key === '-' || key === '*') {
+          li.remove();
+          return;
+        }
+        if (seen.has(key)) {
+          li.remove();
+          return;
+        }
+        seen.add(key);
+      });
+    });
+
+    // Remove empty lists left after cleanup.
+    root.querySelectorAll('ul,ol').forEach((list) => {
+      if (!list.querySelector('li')) {
+        list.remove();
+      }
+    });
+
+    // Group metric paragraphs under headings into a compact list for clearer hierarchy.
+    // Supports an optional narrative intro paragraph before metrics.
+    root.querySelectorAll('h3,h4').forEach((heading) => {
+      const firstNext = heading.nextElementSibling;
+      if (firstNext && firstNext.classList.contains('narrative-metric-list')) return;
+
+      const metricPs: HTMLParagraphElement[] = [];
+      let cursor = heading.nextElementSibling;
+      if (cursor && cursor.tagName === 'P' && !isMetricParagraph(cursor)) {
+        // keep one non-metric intro paragraph, then collect metric rows after it
+        cursor = cursor.nextElementSibling;
+      }
+      while (isMetricParagraph(cursor)) {
+        metricPs.push(cursor);
+        cursor = cursor.nextElementSibling;
+      }
+      if (metricPs.length < 2) return;
+
+      const ul = doc.createElement('ul');
+      ul.className = 'narrative-metric-list';
+      metricPs.forEach((p) => {
+        const li = doc.createElement('li');
+        li.innerHTML = (p.innerHTML || '').replace(/(<br\s*\/?>\s*)+$/gi, '').trim();
+        ul.appendChild(li);
+      });
+
+      metricPs[0].parentNode?.insertBefore(ul, metricPs[0]);
+      metricPs.forEach((p) => p.remove());
     });
 
     // Heal split heading cases like "Suggested" + "next step ...".

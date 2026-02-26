@@ -26,6 +26,10 @@ CRITICAL RULES:
 - Always include LIMIT 100 unless user explicitly requests more.
 - For aggregate "how much" questions, return analysis-ready output:
   include an overall total plus a meaningful breakdown dimension when available.
+- SQL must be syntactically valid BigQuery:
+  - In any SELECT that uses aggregates (SUM/AVG/COUNT/etc.), every non-aggregated selected column must appear in GROUP BY.
+  - Do not select dimension columns alongside aggregates without GROUP BY.
+  - If you build a detail CTE by dimension (for example platform/source/campaign), include GROUP BY in that CTE.
 
 DATA RULES:
 - Columns are already structured (NOT JSON)
@@ -36,6 +40,7 @@ DATA RULES:
 DATE HANDLING:
 - Identify the correct date/timestamp column from schema.
 - For filtering, prefer SAFE_CAST(<date_or_timestamp_column> AS DATE) to avoid failures from malformed string values.
+- For month/week/day filters, apply DATE_TRUNC/DATE arithmetic to SAFE_CAST(<date_col> AS DATE), not raw timestamp/string fields.
 - For "last week", use Monday-Sunday boundaries via WEEK(MONDAY).
 - For relative periods ("yesterday", "this month", "last month", etc.), use CURRENT_DATE()-based filters dynamically.
 - For trend/time-series questions without an explicit date range, default to the last 30 days ending today.
