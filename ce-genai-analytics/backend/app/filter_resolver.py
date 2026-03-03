@@ -2,6 +2,33 @@ import re
 from datetime import datetime, timedelta
 from app.platform_mapping import find_platform_match
 
+def _is_phrase_present(message: str, phrase: str) -> bool:
+    if not message or not phrase:
+        return False
+    tokens = [t for t in re.split(r"\s+", phrase.strip()) if t]
+    if not tokens:
+        return False
+    pattern = r"\b" + r"\W+".join(re.escape(t) for t in tokens) + r"\b"
+    return re.search(pattern, message, flags=re.IGNORECASE) is not None
+
+
+def _has_explicit_platform_intent(message: str) -> bool:
+    msg = (message or "").lower()
+    platform_terms = [
+        r"\bmeta\b",
+        r"\bfacebook\b",
+        r"\binstagram\b",
+        r"\bdv360\b",
+        r"\bsa360\b",
+        r"\bsearch ads 360\b",
+        r"\bdisplay\s*&?\s*video\s*360\b",
+        r"\bgoogle ads?\b",
+        r"\byoutube\b",
+        r"\btiktok\b",
+        r"\blinkedin\b",
+    ]
+    return any(re.search(p, msg, re.IGNORECASE) for p in platform_terms)
+
 def _get_string_columns(schema_fields):
     if not schema_fields:
         return []
@@ -134,7 +161,7 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
         return []
 
     matches.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
-    _, _, _, _, matched_col, matched_value, _ = matches[0]
+    matched_pattern_idx, _, _, _, matched_col, matched_value, _ = matches[0]
 
     safe_value = matched_value.replace("'", "''")
     dim = classify_dimension(matched_col)
@@ -144,10 +171,19 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
     elif dim == "campaign":
         parent_col = hierarchy.get("business")
 
+    # Explicit equality phrasing ("campaign is X", "campaign = X") should stay exact.
+    # Natural-language phrasing ("X campaigns", "on X campaign") should use LIKE
+    # to avoid over-constraining queries that already use wildcard matching.
+    use_exact = matched_pattern_idx == 2
+    if use_exact:
+        pred = lambda col: f"LOWER({col}) = LOWER('{safe_value}')"
+    else:
+        pred = lambda col: f"LOWER({col}) LIKE LOWER('%{safe_value}%')"
+
     if parent_col:
         condition = (
-            f"(LOWER({matched_col}) = LOWER('{safe_value}') "
-            f"OR LOWER({parent_col}) = LOWER('{safe_value}'))"
+            f"({pred(matched_col)} "
+            f"OR {pred(parent_col)})"
         )
         return [{
             "column": condition,
@@ -156,8 +192,8 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
         }]
 
     return [{
-        "column": f"LOWER({matched_col})",
-        "value": f"LOWER('{safe_value}')",
+        "column": pred(matched_col),
+        "value": "",
         "raw": True
     }]
 
@@ -183,8 +219,10 @@ def resolve_filters(message: str, schema_fields=None):
     # ---------------------------
     # Platform (if extracted earlier, skip here)
     # ---------------------------
-    platform, _ = find_platform_match(msg)
-    if platform:
+    platform, matched_phrase = find_platform_match(msg) if _has_explicit_platform_intent(msg) else (None, None)
+    # Only apply platform filter when the matched phrase is explicitly present in the message.
+    # This avoids fuzzy false positives that can over-filter to zero rows.
+    if platform and matched_phrase and _is_phrase_present(msg, matched_phrase):
         filters.append({
             "column": "platform",
             "value": platform,

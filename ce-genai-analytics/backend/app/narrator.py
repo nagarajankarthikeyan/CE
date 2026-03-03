@@ -273,6 +273,84 @@ def build_verified_facts(rows: list, render_spec: dict) -> str:
     # Infer top platform/source by enrollments and clicks from row-level data.
     if rows:
         sample = rows[0]
+        # Derive robust totals from row-level metric columns so narrative has concrete values
+        # even when render_spec has no KPI block (for example, campaign-level result sets).
+        spend_key = _find_key(sample, ["total_spend", "spend", "amount_spent", "ad_spend"])
+        clicks_key = _find_key(sample, ["total_clicks", "clicks"])
+        impr_key = _find_key(sample, ["total_impressions", "impressions"])
+        ctr_key = _find_key(sample, ["ctr", "overall_ctr"])
+        cpc_key = _find_key(sample, ["cpc", "cost_per_click"])
+        cpm_key = _find_key(sample, ["cpm", "cost_per_thousand"])
+        enroll_key_any = _find_key(sample, ["total_enrollments", "enrollments", "total_enrollment", "enrollment_count"])
+
+        label_key = _find_key(sample, ["campaign_name", "platform", "datasource", "source", "channel", "dimension", "group_name"])
+        total_rows = []
+        detail_rows = rows
+        if label_key:
+            total_rows = [
+                r for r in rows
+                if str(r.get(label_key, "")).strip().lower() == "total"
+            ]
+            detail_rows = [
+                r for r in rows
+                if str(r.get(label_key, "")).strip().lower() != "total"
+            ]
+
+        def sum_col(key: str | None):
+            if not key:
+                return None
+            # Prefer explicit TOTAL row when present to avoid double-counting
+            # UNION ALL outputs (TOTAL + detail rows).
+            for tr in total_rows:
+                v = _safe_float(tr.get(key))
+                if v is not None:
+                    return v
+            total = 0.0
+            seen = False
+            source_rows = detail_rows if total_rows and detail_rows else rows
+            for r in source_rows:
+                v = _safe_float(r.get(key))
+                if v is None:
+                    continue
+                total += v
+                seen = True
+            return total if seen else None
+
+        t_spend = sum_col(spend_key)
+        t_clicks = sum_col(clicks_key)
+        t_impr = sum_col(impr_key)
+        t_enroll = sum_col(enroll_key_any)
+
+        if t_spend is not None:
+            facts.append(f"- Total spend: ${t_spend:,.2f}")
+        if t_clicks is not None:
+            facts.append(f"- Total clicks: {t_clicks:,.0f}")
+        if t_impr is not None:
+            facts.append(f"- Total impressions: {t_impr:,.0f}")
+        if t_clicks is not None and t_impr is not None and t_impr > 0:
+            facts.append(f"- Overall CTR: {((t_clicks / t_impr) * 100):.2f}%")
+        elif ctr_key:
+            ctr_total = sum_col(ctr_key)
+            if ctr_total is not None:
+                facts.append(f"- Overall CTR: {ctr_total:.2f}%")
+        cpc_total = sum_col(cpc_key)
+        if cpc_total is not None and cpc_key and cpc_key.lower() == "cpc":
+            # Prefer weighted CPC when spend and clicks exist.
+            if t_spend is not None and t_clicks is not None and t_clicks > 0:
+                facts.append(f"- Overall CPC: ${(t_spend / t_clicks):,.2f}")
+            else:
+                facts.append(f"- Overall CPC: ${cpc_total:,.2f}")
+        cpm_total = sum_col(cpm_key)
+        if cpm_total is not None and cpm_key and cpm_key.lower() == "cpm":
+            if t_spend is not None and t_impr is not None and t_impr > 0:
+                facts.append(f"- Overall CPM: ${((t_spend / t_impr) * 1000):,.2f}")
+            else:
+                facts.append(f"- Overall CPM: ${cpm_total:,.2f}")
+        if t_enroll is not None:
+            facts.append(f"- Total enrollments: {t_enroll:,.0f}")
+            if t_clicks is not None and t_clicks > 0:
+                facts.append(f"- Overall enrollment rate: {((t_enroll / t_clicks) * 100):.2f}%")
+
         source_key = _find_key(sample, ["datasource", "platform", "source", "channel"])
         enroll_key = _find_key(sample, ["total_enrollments", "enrollments", "total_enrollment", "enrollment_count"])
         clicks_key = _find_key(sample, ["clicks", "total_clicks"])
@@ -488,6 +566,44 @@ def build_program_performance_facts(rows: list) -> str:
     return "\n".join(lines) if lines else "- No program facts derived."
 
 
+def build_data_availability_facts(rows: list) -> str:
+    if not rows:
+        return "- Data availability: no rows returned."
+
+    metric_keys = set()
+    for r in rows:
+        for k in r.keys():
+            lk = str(k).strip().lower()
+            if any(t in lk for t in ["spend", "click", "impression", "enroll", "ctr", "cpc", "cpm", "cost"]):
+                metric_keys.add(k)
+
+    if not metric_keys:
+        return f"- Data availability: {len(rows)} row(s) returned, but no recognized metric columns found."
+
+    rows_with_values = 0
+    non_null_cells = 0
+    for r in rows:
+        row_has_metric = False
+        for k in metric_keys:
+            v = _safe_float(r.get(k))
+            if v is not None:
+                non_null_cells += 1
+                row_has_metric = True
+        if row_has_metric:
+            rows_with_values += 1
+
+    if rows_with_values > 0:
+        return (
+            f"- Data availability: metrics are present. "
+            f"{rows_with_values} of {len(rows)} row(s) contain non-null metric values "
+            f"across {len(metric_keys)} metric column(s)."
+        )
+
+    return (
+        f"- Data availability: {len(rows)} row(s) returned but all detected metric fields are null."
+    )
+
+
 async def stream_narrative(question: str, rows: list, render_spec: dict):
     """
     Async generator.
@@ -502,6 +618,7 @@ async def stream_narrative(question: str, rows: list, render_spec: dict):
     period_facts = build_period_facts(question)
     breakdown_facts = build_breakdown_facts(safe_rows)
     program_facts = build_program_performance_facts(safe_rows)
+    availability_facts = build_data_availability_facts(safe_rows)
 
     prompt = f"""
 The user asked:
@@ -522,6 +639,9 @@ Breakdown facts (if present, use in breakdown section):
 Program performance facts (if present, use for weekly/monthly performance responses):
 {program_facts}
 
+Data availability facts (must be respected):
+{availability_facts}
+
 Here are the query results:
 {query_result_text}
 
@@ -535,6 +655,9 @@ Generate a dynamic business summary that follows the required response pattern.
 Adapt the heading text and bullet content to the question and available metrics.
 If breakdown facts are provided, include the grouped amounts and share percentages explicitly in the response.
 Mandatory final check before responding: include "Enrollment Rate" explicitly in the output (or "Enrollment Rate: N/A" if not computable).
+Mandatory consistency check:
+- If data availability says metrics are present, do not claim "no data", "all null", or "not available".
+- If data availability says all metrics are null, explicitly state the limitation.
 Return markdown.
 If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """

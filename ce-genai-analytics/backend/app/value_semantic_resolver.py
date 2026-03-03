@@ -1,10 +1,40 @@
 import re
 from app.platform_mapping import find_platform_match
 
+
+def _is_phrase_present(message: str, phrase: str) -> bool:
+    if not message or not phrase:
+        return False
+    tokens = [t for t in re.split(r"\s+", phrase.strip()) if t]
+    if not tokens:
+        return False
+    pattern = r"\b" + r"\W+".join(re.escape(t) for t in tokens) + r"\b"
+    return re.search(pattern, message, flags=re.IGNORECASE) is not None
+
+
+def _has_explicit_platform_intent(message: str) -> bool:
+    msg = (message or "").lower()
+    platform_terms = [
+        r"\bmeta\b",
+        r"\bfacebook\b",
+        r"\binstagram\b",
+        r"\bdv360\b",
+        r"\bsa360\b",
+        r"\bsearch ads 360\b",
+        r"\bdisplay\s*&?\s*video\s*360\b",
+        r"\bgoogle ads?\b",
+        r"\byoutube\b",
+        r"\btiktok\b",
+        r"\blinkedin\b",
+    ]
+    return any(re.search(p, msg, re.IGNORECASE) for p in platform_terms)
+
+
 def extract_platform(message: str):
     msg_lower = message.lower()
-    canonical, matched_phrase = find_platform_match(msg_lower)
-    if canonical and matched_phrase:
+    canonical, matched_phrase = find_platform_match(msg_lower) if _has_explicit_platform_intent(msg_lower) else (None, None)
+    # Guard against fuzzy false positives: only trust matches explicitly present in text.
+    if canonical and matched_phrase and _is_phrase_present(msg_lower, matched_phrase):
         # Remove matched phrase robustly even when separators differ
         # (e.g., "display & video 360" vs "display video 360").
         phrase_tokens = [t for t in re.split(r"\s+", matched_phrase.strip()) if t]

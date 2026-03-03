@@ -223,6 +223,36 @@ def dedupe_conditions(conditions: list[str]) -> list[str]:
     return out
 
 
+def is_total_null_artifact(rows: list[dict]) -> bool:
+    """
+    Detect result shape like:
+      [{'campaign_name': 'TOTAL', metric1: None, metric2: None, ...}]
+    which usually indicates an empty inner CTE with a total aggregation wrapper.
+    """
+    if not rows or len(rows) != 1 or not isinstance(rows[0], dict):
+        return False
+    row = rows[0]
+    keys = list(row.keys())
+    if not keys:
+        return False
+
+    label_keys = {"campaign_name", "platform", "source", "datasource", "channel", "dimension", "group_name"}
+    label_val = None
+    for k in keys:
+        if str(k).strip().lower() in label_keys:
+            label_val = row.get(k)
+            break
+    if str(label_val or "").strip().upper() != "TOTAL":
+        return False
+
+    for k, v in row.items():
+        if str(k).strip().lower() in label_keys:
+            continue
+        if v is not None:
+            return False
+    return True
+
+
 def _is_invalid_temporal_condition(condition: str) -> bool:
     c = condition or ""
     patterns = [
@@ -496,8 +526,8 @@ async def chat_stream(
 
             platform, cleaned_message = extract_platform(effective_message)
 
-            sql = generate_sql(cleaned_message, json_fields)
-            sql = normalize_sql_value_semantics(sql, json_fields)
+            generated_sql = generate_sql(cleaned_message, json_fields)
+            sql = normalize_sql_value_semantics(generated_sql, json_fields)
 
             # ----------------------------------
             # 2. Collect filters
@@ -540,9 +570,12 @@ async def chat_stream(
             # ----------------------------------
             # 3. Inject filters safely
             # ----------------------------------
+            base_sql = sql
+            had_injected_conditions = False
             if conditions:
                 conditions = dedupe_conditions(conditions)
                 sql = inject_filters_safely(sql, conditions)
+                had_injected_conditions = len(conditions) > 0
 
             # Remove malformed temporal predicates such as TIMESTAMP('').
             sql = strip_invalid_temporal_conditions(sql)
@@ -584,6 +617,24 @@ async def chat_stream(
             exec_start = time.time()
             try:
                 rows = execute_sql(sql, {})
+                if (not rows) or is_total_null_artifact(rows):
+                    # Fallback order when transformed SQL is over-constrained:
+                    # 1) remove injected dynamic/session filters,
+                    # 2) use raw generated SQL before semantic normalization.
+                    fallback_sqls = []
+                    if had_injected_conditions:
+                        fallback_sqls.append(strip_invalid_temporal_conditions(base_sql))
+                    fallback_sqls.append(strip_invalid_temporal_conditions(generated_sql))
+
+                    for fsql in fallback_sqls:
+                        if not fsql or fsql.strip() == sql.strip():
+                            continue
+                        fallback_rows = execute_sql(fsql, {})
+                        if fallback_rows and not is_total_null_artifact(fallback_rows):
+                            rows = fallback_rows
+                            sql = fsql
+                            audit_data["generatedsql"] = sql[:4000]
+                            break
             except Exception as ex:
                 err_text = str(ex)
                 if "Invalid timestamp: ''" in err_text or "Invalid date" in err_text or "Invalid timestamp" in err_text:
