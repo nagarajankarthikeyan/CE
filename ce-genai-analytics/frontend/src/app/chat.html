@@ -178,7 +178,11 @@
         <div class="analysis-chart-card" *ngFor="let chart of m.analysisCharts">
           <h3 class="render-title" *ngIf="chart.title">{{ chart.title }}</h3>
           <div class="analysis-chart-wrap">
-            <div class="analysis-chart-inner" [style.min-width.px]="chart.minWidthPx || 640">
+            <div
+              class="analysis-chart-inner"
+              [style.width.px]="chart.widthPx || chart.minWidthPx || 640"
+              [style.min-width.px]="chart.widthPx || chart.minWidthPx || 640"
+            >
               <canvas
                 baseChart
                 [data]="chart.data"

@@ -30,6 +30,8 @@ from app.session_memory import (
     get_session_filters,
     extract_filters_from_sql,
     clear_session,
+    get_last_question,
+    store_last_question,
 )
 
 router = APIRouter()
@@ -155,6 +157,42 @@ def is_temporal_follow_up_message(message: str) -> bool:
         r"^(today|yesterday|this|last)\b",
     ]
     return any(re.search(p, msg) for p in patterns)
+
+
+def is_format_only_follow_up_message(message: str) -> bool:
+    msg = (message or "").lower().strip()
+    if not msg:
+        return False
+
+    format_markers = [
+        "executive summary",
+        "paragraph form",
+        "single paragraph",
+        "in paragraph",
+        "rewrite",
+        "rephrase",
+        "summarize this",
+        "make it concise",
+        "short summary",
+        "bullet points",
+        "format this",
+        "narrative",
+    ]
+    scope_markers = [
+        "this",
+        "that",
+        "same",
+        "above",
+        "previous",
+        "follow up",
+        "follow-up",
+    ]
+
+    has_format_intent = any(m in msg for m in format_markers)
+    has_scope_reference = any(m in msg for m in scope_markers)
+
+    # Keep this strict so normal analytical questions are not misclassified.
+    return has_format_intent and (has_scope_reference or len(msg.split()) <= 14)
 
 
 def is_temporal_condition(condition: str) -> bool:
@@ -444,7 +482,19 @@ async def chat_stream(
             # 1. Generate base SQL
             # ----------------------------------
             json_fields = get_json_schema()
-            platform, cleaned_message = extract_platform(message)
+            prior_question = get_last_question(user_id, conversation_id)
+
+            effective_message = message
+            narrative_message = message
+            if prior_question and is_format_only_follow_up_message(message):
+                effective_message = prior_question
+                narrative_message = (
+                    f"{prior_question}\n\n"
+                    f"Follow-up formatting instruction: {message}\n"
+                    "Keep the same analytical scope as the prior question and only change response format/style."
+                )
+
+            platform, cleaned_message = extract_platform(effective_message)
 
             sql = generate_sql(cleaned_message, json_fields)
             sql = normalize_sql_value_semantics(sql, json_fields)
@@ -452,7 +502,7 @@ async def chat_stream(
             # ----------------------------------
             # 2. Collect filters
             # ----------------------------------
-            new_filters = resolve_filters(message, json_fields)
+            new_filters = resolve_filters(effective_message, json_fields)
             previous_filters = get_session_filters(user_id, conversation_id)
             current_sql_filters = extract_filters_from_sql(sql)
             has_non_temporal_sql_filters = any(
@@ -467,6 +517,7 @@ async def chat_stream(
                 and previous_filters
                 and (
                     is_follow_up_message(message)
+                    or is_format_only_follow_up_message(message)
                     or (is_temporal_follow_up_message(message) and not has_non_temporal_sql_filters)
                 )
             ):
@@ -559,7 +610,7 @@ async def chat_stream(
             await asyncio.sleep(0.01)
 
             # Stream narrative tokens
-            async for token in stream_narrative(message, rows, render_spec):
+            async for token in stream_narrative(narrative_message, rows, render_spec):
                 full_response_text.append(token) 
                 yield f"data: {token}\n\n"
                 await asyncio.sleep(0)
@@ -578,6 +629,7 @@ async def chat_stream(
                 "total_response_time_ms": total_duration,
                 "response_text": "".join(full_response_text)
             }, default=json_safe)
+            store_last_question(user_id, conversation_id, effective_message)
             
             # Log once at end with success
             AuditService.log_audit_event(**audit_data)

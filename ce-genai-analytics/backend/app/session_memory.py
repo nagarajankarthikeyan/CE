@@ -1,5 +1,9 @@
 SESSION_MEMORY = {}
 
+
+def _key(user_id, conversation_id):
+    return f"{user_id}_{conversation_id}"
+
 def extract_filters_from_sql(sql: str):
     import re
 
@@ -27,8 +31,9 @@ def extract_filters_from_sql(sql: str):
     return cleaned
 
 def get_session_filters(user_id, conversation_id):
-    key = f"{user_id}_{conversation_id}"
-    filters = SESSION_MEMORY.get(key, [])
+    key = _key(user_id, conversation_id)
+    entry = SESSION_MEMORY.get(key, {})
+    filters = entry.get("filters", []) if isinstance(entry, dict) else []
     return _sanitize_conditions(filters)
 
 
@@ -72,7 +77,7 @@ def store_session_filters(user_id, conversation_id, conditions):
     """
     Store ONLY clean condition strings.
     """
-    key = f"{user_id}_{conversation_id}"
+    key = _key(user_id, conversation_id)
 
     if isinstance(conditions, str):
         conditions = [conditions]
@@ -82,10 +87,36 @@ def store_session_filters(user_id, conversation_id, conditions):
 
     # Ensure only strings are stored
     clean = _sanitize_conditions(conditions)
-    SESSION_MEMORY[key] = clean
+    entry = SESSION_MEMORY.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["filters"] = clean
+    SESSION_MEMORY[key] = entry
+
+
+def get_last_question(user_id, conversation_id):
+    key = _key(user_id, conversation_id)
+    entry = SESSION_MEMORY.get(key, {})
+    if not isinstance(entry, dict):
+        return None
+    q = entry.get("last_question")
+    if isinstance(q, str) and q.strip():
+        return q.strip()
+    return None
+
+
+def store_last_question(user_id, conversation_id, question: str):
+    if not isinstance(question, str) or not question.strip():
+        return
+    key = _key(user_id, conversation_id)
+    entry = SESSION_MEMORY.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["last_question"] = question.strip()
+    SESSION_MEMORY[key] = entry
 
 
 
 def clear_session(user_id, conversation_id):
-    key = f"{user_id}_{conversation_id}"
+    key = _key(user_id, conversation_id)
     SESSION_MEMORY.pop(key, None)

@@ -18,6 +18,8 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
 4a. In "Key takeaways", include at least 4 bullets when data supports it (totals, efficiency, leading driver, and one additional insight).
 4b. When available, "Key takeaways" must explicitly include CTR.
 5. Use markdown formatting with proper headings and bullet lists on separate lines.
+5a. Override for explicit user formatting requests: if the user asks for an "executive summary" in "paragraph form"/"single paragraph", return exactly one dense paragraph (no bullets/headings), include the explicit date range in that paragraph, and include key totals + efficiency metrics available in the data.
+5b. For executive-summary paragraph responses on grouped program data (platform/source/channel rows), include concise contribution detail for major groups: each group's spend, enrollments, clicks, impressions, and share of total where computable; explicitly identify primary vs secondary outcome drivers.
 6. Format numbers in a human-friendly way: use dollar signs for money ($9,096.49), percentages for rates (12.3%), and abbreviations for large numbers (1.2M).
 7. Format dates in a readable way (e.g., "February 21, 2026" not "2026-02-21").
 8. If there are trends, comparisons, or outliers, call them out.
@@ -437,6 +439,51 @@ def build_program_performance_facts(rows: list) -> str:
         if grouped and t_clicks and t_clicks > 0:
             top_click = max(grouped, key=lambda x: x[3])
             lines.append(f"- Top click driver: {top_click[0]} ({top_click[3]:,.0f}, {((top_click[3]/t_clicks)*100):.1f}% share)")
+
+    # Add rich per-group contribution facts so follow-up executive summaries can be dense and specific.
+    grouped_rows = []
+    for r in rows:
+        p = str(r.get(platform_key, "")).strip() if platform_key else ""
+        if not p or p.lower() in {"total", "all"}:
+            continue
+        s = _safe_float(r.get(spend_key)) if spend_key else None
+        i = _safe_float(r.get(impressions_key)) if impressions_key else None
+        c = _safe_float(r.get(clicks_key)) if clicks_key else None
+        e = _safe_float(r.get(enroll_total_key)) if enroll_total_key else None
+        grouped_rows.append(
+            {
+                "group": p,
+                "spend": s or 0.0,
+                "impressions": i or 0.0,
+                "clicks": c or 0.0,
+                "enrollments": e or 0.0,
+            }
+        )
+
+    if grouped_rows:
+        ordered = sorted(grouped_rows, key=lambda x: x["enrollments"], reverse=True)[:6]
+        lines.append("- Group contribution detail:")
+        for g in ordered:
+            spend_share = (g["spend"] / t_spend * 100) if t_spend and t_spend > 0 else None
+            enroll_share = (g["enrollments"] / t_enroll * 100) if t_enroll and t_enroll > 0 else None
+            click_share = (g["clicks"] / t_clicks * 100) if t_clicks and t_clicks > 0 else None
+            impr_share = (g["impressions"] / t_impr * 100) if t_impr and t_impr > 0 else None
+
+            parts = [
+                f"{g['group']}: spend ${g['spend']:,.2f}",
+                f"impressions {g['impressions']:,.0f}",
+                f"clicks {g['clicks']:,.0f}",
+                f"enrollments {g['enrollments']:,.0f}",
+            ]
+            if spend_share is not None:
+                parts.append(f"spend share {spend_share:.1f}%")
+            if enroll_share is not None:
+                parts.append(f"enrollment share {enroll_share:.1f}%")
+            if click_share is not None:
+                parts.append(f"click share {click_share:.1f}%")
+            if impr_share is not None:
+                parts.append(f"impression share {impr_share:.1f}%")
+            lines.append("- " + "; ".join(parts))
 
     return "\n".join(lines) if lines else "- No program facts derived."
 

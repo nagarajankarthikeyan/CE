@@ -27,6 +27,7 @@ interface UiChartModel {
   title?: string;
   data: ChartConfiguration['data'];
   options: ChartOptions;
+  widthPx?: number;
   minWidthPx?: number;
 }
 
@@ -1087,7 +1088,7 @@ export class ChatComponent implements OnInit {
                   maxRotation: rotateTicks ? 35 : 0,
                   minRotation: rotateTicks ? 35 : 0
                 },
-                offset: false
+                offset: spec.type === 'bar'
               },
               y: {
                 ticks: {
@@ -1116,12 +1117,31 @@ export class ChatComponent implements OnInit {
     }
 
     const barCount = labels.length || 1;
+    const seriesCount = Math.max(1, yKeys.length);
+    const maxBarThicknessBase =
+      barCount <= 4 ? 60 :
+      barCount <= 8 ? 48 :
+      barCount <= 14 ? 34 :
+      barCount <= 24 ? 24 : 16;
     const maxBarThickness =
-      barCount >= 30 ? 8 :
-      barCount >= 20 ? 12 :
-      barCount >= 12 ? 18 : 28;
-    const widthPerPoint = spec.type === 'bar' ? 58 : 42;
-    const minWidthPx = Math.max(640, barCount * widthPerPoint);
+      spec.type === 'bar'
+        ? Math.max(8, Math.round(maxBarThicknessBase / Math.sqrt(seriesCount)))
+        : undefined;
+    const barPercentage =
+      barCount <= 4 ? 0.9 :
+      barCount <= 8 ? 0.84 :
+      barCount <= 14 ? 0.78 :
+      barCount <= 24 ? 0.72 : 0.66;
+    const categoryPercentage =
+      barCount <= 4 ? 0.98 :
+      barCount <= 8 ? 0.92 :
+      barCount <= 14 ? 0.86 :
+      barCount <= 24 ? 0.8 : 0.74;
+    const widthPerPoint =
+      spec.type === 'bar'
+        ? (barCount <= 4 ? 115 : barCount <= 8 ? 90 : barCount <= 14 ? 70 : barCount <= 24 ? 54 : 44)
+        : 42;
+    const widthPx = Math.max(420, Math.min(2200, Math.round(barCount * widthPerPoint + 120)));
 
     return {
       type: spec.type,
@@ -1135,9 +1155,9 @@ export class ChatComponent implements OnInit {
           borderColor: yk.color || CHART_COLORS[i % CHART_COLORS.length],
           borderWidth: spec.type === 'line' ? 2 : 1,
           borderRadius: spec.type === 'bar' ? 4 : 0,
-          maxBarThickness: spec.type === 'bar' ? maxBarThickness : undefined,
-          barPercentage: spec.type === 'bar' ? 0.72 : undefined,
-          categoryPercentage: spec.type === 'bar' ? 0.74 : undefined,
+          maxBarThickness,
+          barPercentage: spec.type === 'bar' ? barPercentage : undefined,
+          categoryPercentage: spec.type === 'bar' ? categoryPercentage : undefined,
           pointRadius: spec.type === 'line' ? 3 : 0,
           pointHoverRadius: spec.type === 'line' ? 5 : 0,
           tension: spec.type === 'line' ? 0.35 : 0,
@@ -1145,7 +1165,8 @@ export class ChatComponent implements OnInit {
         }))
       },
       options: commonOptions,
-      minWidthPx
+      widthPx,
+      minWidthPx: widthPx
     };
   }
 
