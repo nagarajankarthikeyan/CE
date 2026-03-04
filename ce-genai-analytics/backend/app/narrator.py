@@ -18,9 +18,10 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    - "Suggested takeaway / next step"
 4. Summarize key findings up front, then provide detail.
 4a. In "Key takeaways", include at least 4 bullets when data supports it (totals, efficiency, leading driver, and one additional insight).
-4b. When available, "Key takeaways" must explicitly include CTR.
+4b. When available, "Key takeaways" must explicitly include Cost per Enrollment (CPE) before CTR.
 5. Use markdown formatting with proper headings and bullet lists on separate lines.
-5a. Override for explicit user formatting requests: if the user asks for an "executive summary" in "paragraph form"/"single paragraph", return exactly one dense paragraph (no bullets/headings), include the explicit date range in that paragraph, and include key totals + efficiency metrics available in the data.
+5a. Override for explicit user formatting requests: if the user asks for an "executive summary" in "paragraph form"/"single paragraph"/"one paragraph", return exactly one dense paragraph (no bullets/headings), include the explicit date range in that paragraph, and include key totals + efficiency metrics available in the data.
+5c. For executive-summary paragraph responses on relative periods (for example "last week"), start the paragraph with a complete scope clause like: "For the week of <Month Day, Year> through <Month Day, Year>, ...". Do not start with a fragment, heading label, or dangling parenthetical.
 5b. For executive-summary paragraph responses on grouped program data (platform/source/channel rows), include concise contribution detail for major groups: each group's spend, enrollments, clicks, impressions, and share of total where computable; explicitly identify primary vs secondary outcome drivers.
 6. Format numbers in a human-friendly way: use dollar signs for money ($9,096.49), percentages for rates (12.3%), and abbreviations for large numbers (1.2M).
 7. Format dates in a readable way (e.g., "February 21, 2026" not "2026-02-21").
@@ -31,6 +32,7 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
 12. Do not output markdown tables.
 13. Avoid generic statements; tie every claim to a metric from results.
 14. For relative periods like "last week", "this week", "last month", include the explicit date range in the first heading using readable dates.
+14a. Use "through" between start and end dates (for example: "February 23, 2026 through March 1, 2026"), not a dash-only date pair.
 15. Preferred heading style example: "Last week's program performance (February 16-22, 2026) - Energy".
 16. If you include a chart, also include a short "Chart analysis" subsection in prose (2-4 bullets) that explains the top performer, lowest performer, and concentration/share pattern.
 17. For single-row or single-metric answers (for example: "how much was spend on meta this month"), use a compact format:
@@ -76,7 +78,8 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
    Keep bullets concise and metric-backed (impressions, clicks, CTR, spend).
 
 ## Important Metric Rules
-- For program performance questions, prioritize: spend, impressions, clicks, CTR, CPC, CPM, total enrollments, cost per enrollment (CPE), enrollment rate.
+- For program performance questions, prioritize in this order: spend, total enrollments, cost per enrollment (CPE), enrollment rate, clicks, impressions, CTR, CPC, CPM.
+- When CPE is computable, treat it as a primary efficiency KPI and discuss it ahead of CTR.
 - When available in query results, always include all three in the response:
 - When available in query results, always include all three in the response:
   - Clicks
@@ -91,6 +94,11 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
   - Key takeaways
   - Overall totals/performance
   - Each grouped/platform breakdown row when grouped rows exist.
+- Include CPE in every relevant section when computable:
+  - Key takeaways
+  - Overall totals/performance
+  - Each grouped/platform breakdown row when grouped rows exist.
+  - If CPE cannot be computed from available fields, show "Cost per Enrollment (CPE): N/A".
 - If both totals and platform/source rows are present, include both.
 - If grouped rows are present (2+ groups), include a concise breakdown subsection with one bullet per major group.
 - For "how much spend" style questions, explicitly include:
@@ -325,6 +333,8 @@ def build_verified_facts(rows: list, render_spec: dict) -> str:
 
         if t_spend is not None:
             facts.append(f"- Total spend: ${t_spend:,.2f}")
+        if t_spend is not None and t_enroll is not None and t_enroll > 0:
+            facts.append(f"- Cost per enrollment (CPE): ${(t_spend / t_enroll):,.2f}")
         if t_clicks is not None:
             facts.append(f"- Total clicks: {t_clicks:,.0f}")
         if t_impr is not None:
@@ -480,6 +490,8 @@ def build_program_performance_facts(rows: list) -> str:
 
     if t_spend is not None:
         lines.append(f"- Total spend: ${t_spend:,.2f}")
+    if t_spend is not None and t_enroll is not None and t_enroll > 0:
+        lines.append(f"- Overall cost per enrollment (CPE): ${(t_spend / t_enroll):,.2f}")
     if t_impr is not None:
         lines.append(f"- Total impressions: {t_impr:,.0f}")
     if t_clicks is not None:
@@ -537,6 +549,7 @@ def build_program_performance_facts(rows: list) -> str:
                 "impressions": i or 0.0,
                 "clicks": c or 0.0,
                 "enrollments": e or 0.0,
+                "cpe": ((s or 0.0) / (e or 0.0)) if (e or 0.0) > 0 else None,
             }
         )
 
@@ -555,6 +568,10 @@ def build_program_performance_facts(rows: list) -> str:
                 f"clicks {g['clicks']:,.0f}",
                 f"enrollments {g['enrollments']:,.0f}",
             ]
+            if g["cpe"] is not None:
+                parts.append(f"CPE ${g['cpe']:,.2f}")
+            else:
+                parts.append("CPE N/A")
             if spend_share is not None:
                 parts.append(f"spend share {spend_share:.1f}%")
             if enroll_share is not None:
@@ -698,6 +715,10 @@ Generate a dynamic business summary that follows the required response pattern.
 Adapt the heading text and bullet content to the question and available metrics.
 If breakdown facts are provided, include the grouped amounts and share percentages explicitly in the response.
 Mandatory final check before responding: include "Enrollment Rate" explicitly in the output (or "Enrollment Rate: N/A" if not computable).
+Mandatory style check for executive-summary requests:
+- Begin with a full sentence starting "For the week/month/period ...".
+- Include explicit start and end dates using "through".
+- Do not start with a heading label like "Executive summary".
 Mandatory consistency check:
 - If data availability says metrics are present, do not claim "no data", "all null", or "not available".
 - If data availability says all metrics are null, explicitly state the limitation.

@@ -157,6 +157,8 @@ def is_temporal_follow_up_message(message: str) -> bool:
         r"^(in|for)\s+\d{4}\b",
         r"^(in|for)\s+(today|yesterday|this|last)\b",
         r"^(today|yesterday|this|last)\b",
+        r"\bin\s+q[1-4]\b",
+        r"\bin\s+(20\d{2})\b",
     ]
     return any(re.search(p, msg) for p in patterns)
 
@@ -410,6 +412,59 @@ def _has_metric_intent(message: str) -> bool:
     return any(m in msg for m in metric_markers)
 
 
+def _extract_temporal_markers(message: str) -> set[str]:
+    msg = (message or "").lower()
+    markers = set()
+    for q in re.findall(r"\bq[1-4]\b", msg):
+        markers.add(q)
+    for y in re.findall(r"\b20\d{2}\b", msg):
+        markers.add(y)
+    phrases = [
+        "last week",
+        "this week",
+        "last month",
+        "this month",
+        "month-to-date",
+        "mtd",
+        "ytd",
+        "today",
+        "yesterday",
+    ]
+    for p in phrases:
+        if p in msg:
+            markers.add(p)
+    return markers
+
+
+def _scope_compatible_with_prior(message: str, prior_question: str | None) -> bool:
+    if not isinstance(prior_question, str) or not prior_question.strip():
+        return False
+    current_markers = _extract_temporal_markers(message)
+    if not current_markers:
+        return True
+    prior_markers = _extract_temporal_markers(prior_question)
+    if not prior_markers:
+        return False
+    return current_markers.issubset(prior_markers)
+
+
+def _remembered_question_for_turn(
+    message: str,
+    prior_question: str | None,
+    *,
+    metric_intent: bool,
+    short_metric_lookup: bool,
+    format_only: bool,
+) -> str:
+    """
+    Preserve analytical scope anchor for short metric/format follow-ups so
+    subsequent turns (e.g., '... in Q4') keep the original scoped context.
+    """
+    if prior_question and (short_metric_lookup or format_only or (metric_intent and len(message.split()) <= 12)):
+        return prior_question
+    return message
+
+
 def _norm_text(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
 
@@ -516,8 +571,49 @@ def build_metric_lookup_response(message: str, rows: list[dict]) -> str | None:
     t_enroll = sum_col(enroll_key)
 
     lines = []
-    if any(k in msg for k in ["total spend", "spend", "total cost", "cost"]):
-        if mentioned_labels:
+    spend_intent = any(k in msg for k in ["total spend", "spend", "total cost", "cost"])
+    max_intent = any(k in msg for k in ["max spend", "maximum spend", "highest spend", "top spend", "most spend"])
+    min_intent = any(k in msg for k in ["min spend", "minimum spend", "lowest spend", "least spend"])
+    if spend_intent:
+        if max_intent:
+            source_rows = detail_rows if detail_rows else rows
+            best_row = None
+            best_val = None
+            for r in source_rows:
+                v = _safe_float_value(r.get(spend_key)) if spend_key else None
+                if v is None:
+                    continue
+                if best_val is None or v > best_val:
+                    best_val = v
+                    best_row = r
+            if best_val is None:
+                lines.append("Maximum Spend: N/A")
+            else:
+                lines.append(f"Maximum Spend: ${best_val:,.2f}")
+                if best_row is not None and label_key:
+                    lbl = str(best_row.get(label_key, "")).strip()
+                    if lbl:
+                        lines.append(f"Campaign/Group: {lbl}")
+        elif min_intent:
+            source_rows = detail_rows if detail_rows else rows
+            best_row = None
+            best_val = None
+            for r in source_rows:
+                v = _safe_float_value(r.get(spend_key)) if spend_key else None
+                if v is None:
+                    continue
+                if best_val is None or v < best_val:
+                    best_val = v
+                    best_row = r
+            if best_val is None:
+                lines.append("Minimum Spend: N/A")
+            else:
+                lines.append(f"Minimum Spend: ${best_val:,.2f}")
+                if best_row is not None and label_key:
+                    lbl = str(best_row.get(label_key, "")).strip()
+                    if lbl:
+                        lines.append(f"Campaign/Group: {lbl}")
+        elif mentioned_labels:
             labels_text = " and ".join(mentioned_labels)
             lines.append(
                 f"Combined Total Spend: ${t_spend:,.2f}"
@@ -837,6 +933,8 @@ async def chat_stream(
             last_rows = session_ctx.get("last_rows", []) if isinstance(session_ctx, dict) else []
             short_metric_lookup = is_short_metric_lookup_message(message)
             metric_intent = _has_metric_intent(message)
+            format_only_follow_up = is_format_only_follow_up_message(message)
+            scope_compatible_with_prior = _scope_compatible_with_prior(message, prior_question)
             label_ref_in_last_rows = False
             mentioned_labels_in_last_rows = []
             lr_label_key = None
@@ -850,7 +948,7 @@ async def chat_stream(
             is_contextual_follow_up = (
                 is_follow_up_message(message)
                 or is_temporal_follow_up_message(message)
-                or is_format_only_follow_up_message(message)
+                or format_only_follow_up
                 or short_metric_lookup
                 or (metric_intent and label_ref_in_last_rows and bool(prior_question))
                 or (len(message.split()) < 12 and bool(prior_question))
@@ -905,7 +1003,14 @@ async def chat_stream(
                         "total_response_time_ms": total_duration,
                         "response_text": "".join(full_response_text),
                     }, default=json_safe)
-                    store_last_question(user_id, conversation_id, message)
+                    remember_q = _remembered_question_for_turn(
+                        message,
+                        prior_question,
+                        metric_intent=metric_intent,
+                        short_metric_lookup=short_metric_lookup,
+                        format_only=format_only_follow_up,
+                    )
+                    store_last_question(user_id, conversation_id, remember_q)
                     store_sql_turn(
                         user_id=user_id,
                         conversation_id=conversation_id,
@@ -919,7 +1024,12 @@ async def chat_stream(
                     return
 
             # Priority 1: answer short metric follow-up directly from stored result rows.
-            if metric_intent and isinstance(last_rows, list) and last_rows and (short_metric_lookup or label_ref_in_last_rows):
+            can_answer_metric_from_memory = (
+                short_metric_lookup
+                or label_ref_in_last_rows
+                or (len(message.split()) <= 12 and scope_compatible_with_prior)
+            )
+            if metric_intent and isinstance(last_rows, list) and last_rows and can_answer_metric_from_memory:
                 direct_metric = build_metric_lookup_response(message, last_rows)
                 if direct_metric:
                     render_spec = build_render_spec(message, last_rows)
@@ -944,7 +1054,14 @@ async def chat_stream(
                         "total_response_time_ms": total_duration,
                         "response_text": "".join(full_response_text),
                     }, default=json_safe)
-                    store_last_question(user_id, conversation_id, message)
+                    remember_q = _remembered_question_for_turn(
+                        message,
+                        prior_question,
+                        metric_intent=metric_intent,
+                        short_metric_lookup=short_metric_lookup,
+                        format_only=format_only_follow_up,
+                    )
+                    store_last_question(user_id, conversation_id, remember_q)
                     store_sql_turn(
                         user_id=user_id,
                         conversation_id=conversation_id,
@@ -959,7 +1076,7 @@ async def chat_stream(
 
             effective_message = message
             narrative_message = message
-            if prior_question and is_format_only_follow_up_message(message):
+            if prior_question and format_only_follow_up:
                 effective_message = prior_question
                 narrative_message = (
                     f"{prior_question}\n\n"
@@ -1110,6 +1227,15 @@ async def chat_stream(
                     sql = scrub_sql_for_invalid_timestamp(sql)
                     audit_data["generatedsql"] = sql[:4000]
                     rows = execute_sql(sql, {})
+                elif "UNION ALL has incompatible types" in err_text or "incompatible types" in err_text and "UNION ALL" in err_text:
+                    # Retry with BigQuery UNION ALL BY NAME to avoid positional column mismatches.
+                    sql_by_name = re.sub(r"\bUNION\s+ALL\b", "UNION ALL BY NAME", sql, flags=re.IGNORECASE)
+                    if sql_by_name != sql:
+                        sql = sql_by_name
+                        audit_data["generatedsql"] = sql[:4000]
+                        rows = execute_sql(sql, {})
+                    else:
+                        raise
                 else:
                     raise
 
@@ -1156,7 +1282,14 @@ async def chat_stream(
                 "total_response_time_ms": total_duration,
                 "response_text": "".join(full_response_text)
             }, default=json_safe)
-            store_last_question(user_id, conversation_id, effective_message)
+            remember_q = _remembered_question_for_turn(
+                effective_message,
+                prior_question,
+                metric_intent=metric_intent,
+                short_metric_lookup=short_metric_lookup,
+                format_only=format_only_follow_up,
+            )
+            store_last_question(user_id, conversation_id, remember_q)
             store_sql_turn(
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -1164,7 +1297,7 @@ async def chat_stream(
                 assistant_message="".join(assistant_text_parts),
                 sql=sql,
                 schema=json_fields,
-                rows=last_rows if is_contextual_follow_up and isinstance(last_rows, list) and last_rows else rows,
+                rows=rows,
             )
             
             # Log once at end with success

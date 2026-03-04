@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timedelta
-from app.platform_mapping import find_platform_match
+from app.platform_mapping import find_platform_match, get_platform_aliases
 
 def _is_phrase_present(message: str, phrase: str) -> bool:
     if not message or not phrase:
@@ -42,6 +42,42 @@ def _get_string_columns(schema_fields):
         if name and dtype == "STRING":
             cols.append(str(name))
     return cols
+
+
+def _build_platform_condition(schema_fields, canonical_platform: str, matched_phrase: str | None) -> str:
+    candidate_cols = {"platform", "datasource", "source", "channel"}
+    schema_cols = {str(c).lower(): c for c in _get_string_columns(schema_fields)}
+    present_cols = [schema_cols[c] for c in candidate_cols if c in schema_cols]
+
+    # Fallback to `platform` if schema isn't available.
+    if not present_cols:
+        present_cols = ["platform"]
+
+    aliases = get_platform_aliases(canonical_platform)
+    if matched_phrase:
+        mp = re.sub(r"\s+", " ", matched_phrase.strip().lower())
+        if mp:
+            aliases.append(mp)
+    aliases.append((canonical_platform or "").strip().lower())
+    aliases = [a for a in dict.fromkeys(aliases) if a]
+
+    if not aliases:
+        safe = (canonical_platform or "").replace("'", "''")
+        return f"LOWER(platform) = LOWER('{safe}')"
+
+    alias_literals = ", ".join("'" + a.replace("'", "''") + "'" for a in aliases)
+    like_terms = [
+        "'" + ("%" + a.replace("'", "''") + "%") + "'"
+        for a in aliases
+        if len(a) >= 3
+    ]
+    col_exprs = []
+    for col in present_cols:
+        expr = f"LOWER({col}) IN ({alias_literals})"
+        if like_terms:
+            expr += " OR " + " OR ".join(f"LOWER({col}) LIKE {lt}" for lt in like_terms)
+        col_exprs.append(f"({expr})")
+    return "(" + " OR ".join(col_exprs) + ")"
 
 
 def _tokenize_column(col_name: str):
@@ -107,6 +143,10 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
         "metric", "metrics", "performance", "compare", "comparison",
         "spend", "cost", "click", "clicks", "impression", "impressions", "ctr",
         "total", "sum", "avg", "average",
+        "by", "for", "in", "on", "at",
+        "last", "this", "next", "previous",
+        "week", "month", "quarter", "year", "ytd", "mtd",
+        "today", "yesterday", "tomorrow",
     }
     quarter_tokens = {"q1", "q2", "q3", "q4", "quarter", "quarters", "vs", "versus", "compared"}
 
@@ -148,6 +188,9 @@ def _extract_dynamic_dimension_filters(message: str, schema_fields):
             ]
 
             for idx, pattern in enumerate(patterns):
+                # "by <dimension>" indicates grouping intent, not a filter value.
+                if idx == 3 and re.search(rf"\bby\s+{alias_re}\b", msg, re.IGNORECASE):
+                    continue
                 m = re.search(pattern, msg, re.IGNORECASE)
                 if not m:
                     continue
@@ -219,14 +262,17 @@ def resolve_filters(message: str, schema_fields=None):
     # ---------------------------
     # Platform (if extracted earlier, skip here)
     # ---------------------------
-    platform, matched_phrase = find_platform_match(msg) if _has_explicit_platform_intent(msg) else (None, None)
+    # Always attempt synonym-table based platform matching.
+    # Keep explicit phrase presence guard below to avoid fuzzy over-filtering.
+    platform, matched_phrase = find_platform_match(msg)
     # Only apply platform filter when the matched phrase is explicitly present in the message.
     # This avoids fuzzy false positives that can over-filter to zero rows.
     if platform and matched_phrase and _is_phrase_present(msg, matched_phrase):
+        platform_condition = _build_platform_condition(schema_fields, platform, matched_phrase)
         filters.append({
-            "column": "platform",
-            "value": platform,
-            "raw": False
+            "column": platform_condition,
+            "value": "",
+            "raw": True
         })
 
     # ---------------------------

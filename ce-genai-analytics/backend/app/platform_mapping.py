@@ -100,3 +100,35 @@ def find_platform_match(message: str, threshold: float = 0.84):
         return best[1], best[2]
 
     return None, None
+
+
+def get_platform_aliases(canonical_platform: str) -> list[str]:
+    """
+    Return normalized aliases (including the canonical token) for a platform.
+    Useful for building robust SQL filters across platform/source/datasource columns.
+    """
+    canonical = (canonical_platform or "").strip()
+    if not canonical:
+        return []
+
+    synonyms_map = _platform_synonyms()
+    if not synonyms_map:
+        return [_normalize_text(canonical)]
+
+    aliases = []
+    canonical_upper = canonical.upper()
+    for synonym_norm, mapped in synonyms_map.items():
+        if (mapped or "").strip().upper() == canonical_upper:
+            normalized = _normalize_text(synonym_norm)
+            if normalized:
+                aliases.append(normalized)
+
+    aliases.append(_normalize_text(canonical))
+    seen = set()
+    deduped = []
+    for a in aliases:
+        if not a or a in seen:
+            continue
+        seen.add(a)
+        deduped.append(a)
+    return deduped

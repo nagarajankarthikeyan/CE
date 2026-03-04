@@ -32,7 +32,9 @@ def _has_explicit_platform_intent(message: str) -> bool:
 
 def extract_platform(message: str):
     msg_lower = message.lower()
-    canonical, matched_phrase = find_platform_match(msg_lower) if _has_explicit_platform_intent(msg_lower) else (None, None)
+    # Always attempt synonym-table based platform matching.
+    # Keep explicit phrase presence guard below to avoid fuzzy over-filtering.
+    canonical, matched_phrase = find_platform_match(msg_lower)
     # Guard against fuzzy false positives: only trust matches explicitly present in text.
     if canonical and matched_phrase and _is_phrase_present(msg_lower, matched_phrase):
         # Remove matched phrase robustly even when separators differ
