@@ -2,7 +2,7 @@ SESSION_MEMORY = {}
 
 
 def _key(user_id, conversation_id):
-    return f"{user_id}_{conversation_id}"
+    return f"{str(user_id)}::{str(conversation_id)}"
 
 def extract_filters_from_sql(sql: str):
     import re
@@ -113,6 +113,94 @@ def store_last_question(user_id, conversation_id, question: str):
     if not isinstance(entry, dict):
         entry = {}
     entry["last_question"] = question.strip()
+    SESSION_MEMORY[key] = entry
+
+
+def get_sql_context(user_id, conversation_id):
+    key = _key(user_id, conversation_id)
+    entry = SESSION_MEMORY.get(key, {})
+    if not isinstance(entry, dict):
+        return {
+            "history": [],
+            "last_sql": None,
+            "schema": None,
+            "last_result_columns": [],
+            "last_rows": [],
+        }
+
+    history = entry.get("history", [])
+    if not isinstance(history, list):
+        history = []
+    clean_history = []
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            clean_history.append({"role": role, "content": content.strip()})
+
+    last_sql = entry.get("last_sql")
+    if not isinstance(last_sql, str) or not last_sql.strip():
+        last_sql = None
+
+    schema = entry.get("schema")
+    if not isinstance(schema, (dict, list)):
+        schema = None
+
+    last_result_columns = entry.get("last_result_columns", [])
+    if not isinstance(last_result_columns, list):
+        last_result_columns = []
+    clean_cols = [str(c).strip() for c in last_result_columns if str(c).strip()]
+    last_rows = entry.get("last_rows", [])
+    if not isinstance(last_rows, list):
+        last_rows = []
+
+    return {
+        "history": clean_history,
+        "last_sql": last_sql,
+        "schema": schema,
+        "last_result_columns": clean_cols,
+        "last_rows": last_rows,
+    }
+
+
+def store_sql_turn(
+    user_id,
+    conversation_id,
+    user_message: str,
+    assistant_message: str,
+    sql: str,
+    schema,
+    rows: list | None = None,
+    max_history_messages: int = 12,
+):
+    key = _key(user_id, conversation_id)
+    entry = SESSION_MEMORY.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+
+    history = entry.get("history", [])
+    if not isinstance(history, list):
+        history = []
+
+    if isinstance(user_message, str) and user_message.strip():
+        history.append({"role": "user", "content": user_message.strip()})
+    if isinstance(assistant_message, str) and assistant_message.strip():
+        history.append({"role": "assistant", "content": assistant_message.strip()})
+
+    if isinstance(max_history_messages, int) and max_history_messages >= 0:
+        if len(history) > max_history_messages:
+            history = history[-max_history_messages:]
+
+    entry["history"] = history
+    if isinstance(sql, str) and sql.strip():
+        entry["last_sql"] = sql.strip()
+    if isinstance(schema, (dict, list)):
+        entry["schema"] = schema
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        entry["last_result_columns"] = [str(k) for k in rows[0].keys()]
+        entry["last_rows"] = rows[:100]
     SESSION_MEMORY[key] = entry
 
 

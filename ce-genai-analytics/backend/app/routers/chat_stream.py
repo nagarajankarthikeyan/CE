@@ -32,6 +32,8 @@ from app.session_memory import (
     clear_session,
     get_last_question,
     store_last_question,
+    get_sql_context,
+    store_sql_turn,
 )
 
 router = APIRouter()
@@ -159,6 +161,55 @@ def is_temporal_follow_up_message(message: str) -> bool:
     return any(re.search(p, msg) for p in patterns)
 
 
+def is_short_metric_lookup_message(message: str) -> bool:
+    msg = (message or "").strip().lower()
+    if not msg:
+        return False
+
+    token_count = len([t for t in re.split(r"\s+", msg) if t])
+    if token_count > 10:
+        return False
+
+    metric_markers = [
+        "spend",
+        "cost",
+        "ctr",
+        "cpc",
+        "cpm",
+        "clicks",
+        "impressions",
+        "enrollments",
+        "enrollment rate",
+        "revenue",
+        "roas",
+        "conversions",
+        "leads",
+    ]
+    has_metric = any(m in msg for m in metric_markers)
+    if not has_metric:
+        return False
+
+    explicit_scope_markers = [
+        "campaign",
+        "platform",
+        "channel",
+        "source",
+        "state",
+        "region",
+        "market",
+        "yesterday",
+        "today",
+        "last week",
+        "this week",
+        "last month",
+        "this month",
+    ]
+    has_explicit_scope = any(m in msg for m in explicit_scope_markers) or bool(
+        re.search(r"\bq[1-4]\b|\b20\d{2}\b", msg)
+    )
+    return not has_explicit_scope
+
+
 def is_format_only_follow_up_message(message: str) -> bool:
     msg = (message or "").lower().strip()
     if not msg:
@@ -251,6 +302,270 @@ def is_total_null_artifact(rows: list[dict]) -> bool:
         if v is not None:
             return False
     return True
+
+
+def build_sql_follow_up_context_prompt(
+    current_message: str,
+    history: list[dict],
+    last_sql: str | None,
+    schema_fields,
+    last_result_columns: list[str] | None = None,
+) -> str:
+    parts = [
+        "Current user question:",
+        current_message,
+    ]
+
+    if last_sql:
+        parts.extend(
+            [
+                "",
+                "Previous SQL from this session (use as context, adapt as needed):",
+                last_sql,
+            ]
+        )
+
+    if schema_fields is not None:
+        parts.extend(
+            [
+                "",
+                "Session schema context:",
+                str(schema_fields),
+            ]
+        )
+
+    if isinstance(last_result_columns, list) and last_result_columns:
+        parts.extend(
+            [
+                "",
+                "Previous result columns from this session:",
+                str(last_result_columns),
+            ]
+        )
+
+    if history:
+        lines = []
+        for m in history[-12:]:
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                lines.append(f"{role}: {content}")
+        if lines:
+            parts.extend(
+                [
+                    "",
+                    "Recent conversation history (oldest to newest):",
+                    "\n".join(lines),
+                ]
+            )
+
+    parts.extend(
+        [
+            "",
+            "Generate SQL for the current user question while preserving follow-up context from prior turns.",
+        ]
+    )
+    return "\n".join(parts)
+
+
+def _safe_float_value(val):
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            cleaned = val.replace("$", "").replace("%", "").replace(",", "").strip()
+            if cleaned == "":
+                return None
+            return float(cleaned)
+        return float(val)
+    except Exception:
+        return None
+
+
+def _find_metric_key(row: dict, candidates: list[str]) -> str | None:
+    lowered = {str(k).strip().lower(): k for k in row.keys()}
+    for c in candidates:
+        if c in lowered:
+            return lowered[c]
+    return None
+
+
+def _has_metric_intent(message: str) -> bool:
+    msg = (message or "").lower()
+    metric_markers = [
+        "spend",
+        "cost",
+        "ctr",
+        "cpc",
+        "cpm",
+        "clicks",
+        "impressions",
+        "enrollments",
+        "enrollment rate",
+        "revenue",
+        "roas",
+        "conversions",
+        "leads",
+    ]
+    return any(m in msg for m in metric_markers)
+
+
+def _norm_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
+
+
+def _find_mentioned_group_labels(message: str, rows: list[dict], label_key: str | None) -> list[str]:
+    if not label_key or not rows:
+        return []
+    msg = _norm_text(message or "")
+    if not msg:
+        return []
+    labels = []
+    for r in rows:
+        raw = str(r.get(label_key, "")).strip()
+        if not raw:
+            continue
+        if raw.lower() in {"total", "all"}:
+            continue
+        n = _norm_text(raw)
+        if not n:
+            continue
+        n_core = re.sub(r"\b(campaign|campaigns)\b", "", n).strip()
+        # Strict contains first, then tolerant token subset for labels with extra suffix words.
+        if n in msg or (n_core and n_core in msg):
+            labels.append(raw)
+            continue
+    # preserve order, dedupe
+    out = []
+    seen = set()
+    for l in labels:
+        k = _norm_text(l)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(l)
+    return out
+
+
+def _filter_rows_by_labels(rows: list[dict], label_key: str | None, labels: list[str]) -> list[dict]:
+    if not rows or not label_key or not labels:
+        return rows
+    wanted = {_norm_text(v) for v in labels}
+    out = []
+    for r in rows:
+        rv = _norm_text(str(r.get(label_key, "")))
+        if rv in wanted:
+            out.append(r)
+    return out
+
+
+def build_metric_lookup_response(message: str, rows: list[dict]) -> str | None:
+    if not rows or not isinstance(rows[0], dict):
+        return None
+    msg = (message or "").lower()
+    sample = rows[0]
+
+    label_key = _find_metric_key(
+        sample,
+        ["campaign_name", "platform", "source", "datasource", "channel", "dimension", "group_name"],
+    )
+    total_rows = []
+    detail_rows = rows
+    if label_key:
+        total_rows = [r for r in rows if str(r.get(label_key, "")).strip().lower() == "total"]
+        detail_rows = [r for r in rows if str(r.get(label_key, "")).strip().lower() != "total"]
+    mentioned_labels = _find_mentioned_group_labels(message, detail_rows if detail_rows else rows, label_key)
+    if mentioned_labels and label_key:
+        wanted = {_norm_text(v) for v in mentioned_labels}
+        scoped_rows = [
+            r for r in (detail_rows if detail_rows else rows)
+            if _norm_text(str(r.get(label_key, ""))) in wanted
+        ]
+        if scoped_rows:
+            detail_rows = scoped_rows
+            total_rows = []
+
+    def sum_col(key: str | None):
+        if not key:
+            return None
+        for tr in total_rows:
+            v = _safe_float_value(tr.get(key))
+            if v is not None:
+                return v
+        # If rows were narrowed for a follow-up (e.g., specific campaigns),
+        # aggregate over narrowed detail_rows even when TOTAL row is absent.
+        source_rows = detail_rows if detail_rows else rows
+        total = 0.0
+        seen = False
+        for r in source_rows:
+            v = _safe_float_value(r.get(key))
+            if v is None:
+                continue
+            total += v
+            seen = True
+        return total if seen else None
+
+    spend_key = _find_metric_key(sample, ["total_spend", "spend", "amount_spent", "ad_spend"])
+    clicks_key = _find_metric_key(sample, ["total_clicks", "clicks"])
+    impr_key = _find_metric_key(sample, ["total_impressions", "impressions"])
+    enroll_key = _find_metric_key(sample, ["total_enrollments", "enrollments", "total_enrollment", "enrollment_count"])
+
+    t_spend = sum_col(spend_key)
+    t_clicks = sum_col(clicks_key)
+    t_impr = sum_col(impr_key)
+    t_enroll = sum_col(enroll_key)
+
+    lines = []
+    if any(k in msg for k in ["total spend", "spend", "total cost", "cost"]):
+        if mentioned_labels:
+            labels_text = " and ".join(mentioned_labels)
+            lines.append(
+                f"Combined Total Spend: ${t_spend:,.2f}"
+                if t_spend is not None
+                else "Combined Total Spend: N/A"
+            )
+            if label_key and t_spend is not None:
+                for lbl in mentioned_labels:
+                    rv = None
+                    for r in detail_rows:
+                        if _norm_text(str(r.get(label_key, ""))) == _norm_text(lbl):
+                            rv = _safe_float_value(r.get(spend_key))
+                            break
+                    if rv is not None:
+                        pretty_label = re.sub(r"_+", " ", lbl).strip()
+                        lines.append(f"{pretty_label}: ${rv:,.2f}")
+            # Clarify explicit inclusion scope when selected groups are a subset.
+            all_labels = []
+            for r in (rows or []):
+                raw = str(r.get(label_key, "")).strip() if label_key else ""
+                if raw and raw.lower() not in {"total", "all"}:
+                    all_labels.append(raw)
+            all_norm = {_norm_text(x) for x in all_labels}
+            sel_norm = {_norm_text(x) for x in mentioned_labels}
+            if all_norm and sel_norm and len(sel_norm) < len(all_norm):
+                lines.append(
+                    f"This includes only {labels_text} and excludes other campaigns in this result set."
+                )
+        else:
+            lines.append(f"Total Spend: ${t_spend:,.2f}" if t_spend is not None else "Total Spend: N/A")
+    if any(k in msg for k in ["clicks", "total clicks"]):
+        lines.append(f"Total Clicks: {t_clicks:,.0f}" if t_clicks is not None else "Total Clicks: N/A")
+    if any(k in msg for k in ["impressions", "total impressions"]):
+        lines.append(f"Total Impressions: {t_impr:,.0f}" if t_impr is not None else "Total Impressions: N/A")
+    if any(k in msg for k in ["ctr", "click through rate", "click-through rate"]):
+        if t_clicks is not None and t_impr not in (None, 0):
+            lines.append(f"CTR: {((t_clicks / t_impr) * 100):.2f}%")
+        else:
+            lines.append("CTR: N/A")
+    if any(k in msg for k in ["enrollment rate"]):
+        if t_enroll is not None and t_clicks not in (None, 0):
+            lines.append(f"Enrollment Rate: {((t_enroll / t_clicks) * 100):.2f}%")
+        else:
+            lines.append("Enrollment Rate: N/A")
+
+    if not lines:
+        return None
+    return "\n".join(dict.fromkeys(lines))
 
 
 def _is_invalid_temporal_condition(condition: str) -> bool:
@@ -465,6 +780,7 @@ async def chat_stream(
     full_response_text = []
     async def event_generator():
         start_time = time.time()
+        narrative_session_id = conversation_id
         
         # Audit state - collect data without logging yet
         audit_data = {
@@ -513,6 +829,133 @@ async def chat_stream(
             # ----------------------------------
             json_fields = get_json_schema()
             prior_question = get_last_question(user_id, conversation_id)
+            session_ctx = get_sql_context(user_id, conversation_id)
+            history = session_ctx.get("history", []) if isinstance(session_ctx, dict) else []
+            last_sql = session_ctx.get("last_sql") if isinstance(session_ctx, dict) else None
+            stored_schema = session_ctx.get("schema") if isinstance(session_ctx, dict) else None
+            last_result_columns = session_ctx.get("last_result_columns", []) if isinstance(session_ctx, dict) else []
+            last_rows = session_ctx.get("last_rows", []) if isinstance(session_ctx, dict) else []
+            short_metric_lookup = is_short_metric_lookup_message(message)
+            metric_intent = _has_metric_intent(message)
+            label_ref_in_last_rows = False
+            mentioned_labels_in_last_rows = []
+            lr_label_key = None
+            if isinstance(last_rows, list) and last_rows and isinstance(last_rows[0], dict):
+                lr_label_key = _find_metric_key(
+                    last_rows[0],
+                    ["campaign_name", "platform", "source", "datasource", "channel", "dimension", "group_name"],
+                )
+                mentioned_labels_in_last_rows = _find_mentioned_group_labels(message, last_rows, lr_label_key)
+                label_ref_in_last_rows = bool(mentioned_labels_in_last_rows)
+            is_contextual_follow_up = (
+                is_follow_up_message(message)
+                or is_temporal_follow_up_message(message)
+                or is_format_only_follow_up_message(message)
+                or short_metric_lookup
+                or (metric_intent and label_ref_in_last_rows and bool(prior_question))
+                or (len(message.split()) < 12 and bool(prior_question))
+            )
+
+            # Priority 0: short entity-only follow-up (e.g., "how about GA Atlanta NB?")
+            # Reuse prior result rows and narrow to the mentioned label(s).
+            if (
+                not metric_intent
+                and label_ref_in_last_rows
+                and isinstance(last_rows, list)
+                and last_rows
+                and len(message.split()) <= 12
+            ):
+                scoped_rows = _filter_rows_by_labels(last_rows, lr_label_key, mentioned_labels_in_last_rows)
+                if scoped_rows:
+                    render_spec = build_render_spec(message, scoped_rows)
+                    focus_prompt = (
+                        f"{prior_question}\n"
+                        f"Follow-up focus: {message}\n"
+                        "Use the same analytical scope and report only for the requested campaign/group."
+                        if prior_question else message
+                    )
+                    audit_data["generatedsql"] = "[SESSION_RESULT_REUSE_ENTITY]"
+                    audit_data["rowsreturned"] = len(scoped_rows)
+                    audit_data["sqlstatus"] = "SUCCESS"
+                    full_response_text.append(json.dumps(scoped_rows, default=json_safe))
+                    yield f"event: render\ndata: {json.dumps(render_spec, default=json_safe)}\n\n"
+                    await asyncio.sleep(0.01)
+                    assistant_text_parts = []
+                    async for token in stream_narrative(
+                        session_id=narrative_session_id,
+                        question=focus_prompt,
+                        rows=scoped_rows,
+                        render_spec=render_spec,
+                        conversation_history=history,
+                        last_sql=last_sql,
+                    ):
+                        assistant_text_parts.append(token)
+                        full_response_text.append(token)
+                        yield f"data: {token}\n\n"
+                        await asyncio.sleep(0)
+                    yield "event: done\ndata: [DONE]\n\n"
+                    total_duration = int((time.time() - start_time) * 1000)
+                    audit_data["durationms"] = total_duration
+                    audit_data["responsestatus"] = 200
+                    audit_data["responsedurationms"] = total_duration
+                    audit_data["response"] = json.dumps({
+                        "status": "success",
+                        "rowsreturned": len(scoped_rows),
+                        "sql_execution_time_ms": 0,
+                        "total_response_time_ms": total_duration,
+                        "response_text": "".join(full_response_text),
+                    }, default=json_safe)
+                    store_last_question(user_id, conversation_id, message)
+                    store_sql_turn(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        user_message=message,
+                        assistant_message="".join(assistant_text_parts),
+                        sql=last_sql or "[SESSION_RESULT_REUSE_ENTITY]",
+                        schema=stored_schema or json_fields,
+                        rows=last_rows if isinstance(last_rows, list) and last_rows else scoped_rows,
+                    )
+                    AuditService.log_audit_event(**audit_data)
+                    return
+
+            # Priority 1: answer short metric follow-up directly from stored result rows.
+            if metric_intent and isinstance(last_rows, list) and last_rows and (short_metric_lookup or label_ref_in_last_rows):
+                direct_metric = build_metric_lookup_response(message, last_rows)
+                if direct_metric:
+                    render_spec = build_render_spec(message, last_rows)
+                    audit_data["generatedsql"] = "[SESSION_RESULT_REUSE_METRIC]"
+                    audit_data["rowsreturned"] = len(last_rows)
+                    audit_data["sqlstatus"] = "SUCCESS"
+                    full_response_text.append(json.dumps(last_rows, default=json_safe))
+                    yield f"event: render\ndata: {json.dumps(render_spec, default=json_safe)}\n\n"
+                    await asyncio.sleep(0.01)
+                    full_response_text.append(direct_metric)
+                    yield f"data: {direct_metric}\n\n"
+                    await asyncio.sleep(0)
+                    yield "event: done\ndata: [DONE]\n\n"
+                    total_duration = int((time.time() - start_time) * 1000)
+                    audit_data["durationms"] = total_duration
+                    audit_data["responsestatus"] = 200
+                    audit_data["responsedurationms"] = total_duration
+                    audit_data["response"] = json.dumps({
+                        "status": "success",
+                        "rowsreturned": len(last_rows),
+                        "sql_execution_time_ms": 0,
+                        "total_response_time_ms": total_duration,
+                        "response_text": "".join(full_response_text),
+                    }, default=json_safe)
+                    store_last_question(user_id, conversation_id, message)
+                    store_sql_turn(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        user_message=message,
+                        assistant_message=direct_metric,
+                        sql=last_sql or "[SESSION_RESULT_REUSE_METRIC]",
+                        schema=stored_schema or json_fields,
+                        rows=last_rows if isinstance(last_rows, list) and last_rows else rows,
+                    )
+                    AuditService.log_audit_event(**audit_data)
+                    return
 
             effective_message = message
             narrative_message = message
@@ -525,8 +968,33 @@ async def chat_stream(
                 )
 
             platform, cleaned_message = extract_platform(effective_message)
+            sql_prompt = cleaned_message
+            # Priority 2: short metric follow-up should modify previous SQL, preserving filters.
+            if short_metric_lookup and last_sql:
+                sql_prompt = (
+                    f"Previous SQL:\n{last_sql}\n\n"
+                    f"Follow-up user question: {cleaned_message}\n\n"
+                    "Modify the previous SQL to return only the requested metric. "
+                    "Do NOT remove existing WHERE filters."
+                )
+            if is_contextual_follow_up and (history or last_sql or stored_schema or last_result_columns):
+                sql_prompt = build_sql_follow_up_context_prompt(
+                    current_message=cleaned_message,
+                    history=history,
+                    last_sql=last_sql,
+                    schema_fields=stored_schema or json_fields,
+                    last_result_columns=last_result_columns,
+                )
+            # Keep the previous-SQL instruction dominant for short metric follow-ups.
+            if short_metric_lookup and last_sql:
+                sql_prompt = (
+                    f"Previous SQL:\n{last_sql}\n\n"
+                    f"Follow-up user question: {cleaned_message}\n\n"
+                    "Modify the previous SQL to return only the requested metric. "
+                    "Do NOT remove existing WHERE filters."
+                )
 
-            generated_sql = generate_sql(cleaned_message, json_fields)
+            generated_sql = generate_sql(sql_prompt, json_fields)
             sql = normalize_sql_value_semantics(generated_sql, json_fields)
 
             # ----------------------------------
@@ -546,8 +1014,7 @@ async def chat_stream(
                 not new_filters
                 and previous_filters
                 and (
-                    is_follow_up_message(message)
-                    or is_format_only_follow_up_message(message)
+                    is_contextual_follow_up
                     or (is_temporal_follow_up_message(message) and not has_non_temporal_sql_filters)
                 )
             ):
@@ -661,7 +1128,16 @@ async def chat_stream(
             await asyncio.sleep(0.01)
 
             # Stream narrative tokens
-            async for token in stream_narrative(narrative_message, rows, render_spec):
+            assistant_text_parts = []
+            async for token in stream_narrative(
+                session_id=narrative_session_id,
+                question=narrative_message,
+                rows=rows,
+                render_spec=render_spec,
+                conversation_history=history,
+                last_sql=last_sql,
+            ):
+                assistant_text_parts.append(token)
                 full_response_text.append(token) 
                 yield f"data: {token}\n\n"
                 await asyncio.sleep(0)
@@ -681,6 +1157,15 @@ async def chat_stream(
                 "response_text": "".join(full_response_text)
             }, default=json_safe)
             store_last_question(user_id, conversation_id, effective_message)
+            store_sql_turn(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                user_message=message,
+                assistant_message="".join(assistant_text_parts),
+                sql=sql,
+                schema=json_fields,
+                rows=last_rows if is_contextual_follow_up and isinstance(last_rows, list) and last_rows else rows,
+            )
             
             # Log once at end with success
             AuditService.log_audit_event(**audit_data)

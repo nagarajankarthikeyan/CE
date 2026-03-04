@@ -2,6 +2,8 @@ from app.gpt_client import stream_chat_completion
 import json
 from datetime import date, datetime, timedelta
 
+SESSIONS = {}
+
 
 ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Constellation. You just ran a SQL query for a marketer and got results back. Your job is to present the findings in clear, conversational prose that a non-technical marketer can understand.
 
@@ -604,7 +606,14 @@ def build_data_availability_facts(rows: list) -> str:
     )
 
 
-async def stream_narrative(question: str, rows: list, render_spec: dict):
+async def stream_narrative(
+    session_id: str,
+    question: str,
+    rows: list,
+    render_spec: dict,
+    conversation_history: list[dict] | None = None,
+    last_sql: str | None = None,
+):
     """
     Async generator.
     Streams analysis tokens progressively.
@@ -619,6 +628,28 @@ async def stream_narrative(question: str, rows: list, render_spec: dict):
     breakdown_facts = build_breakdown_facts(safe_rows)
     program_facts = build_program_performance_facts(safe_rows)
     availability_facts = build_data_availability_facts(safe_rows)
+    session = SESSIONS.get(session_id, {})
+    if not isinstance(session, dict):
+        session = {}
+    history = session.get("history", [])
+    if not isinstance(history, list):
+        history = []
+    merged_history = history.copy()
+    if isinstance(conversation_history, list):
+        for m in conversation_history[-12:]:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                merged_history.append(f"{role.capitalize()}: {content}")
+    history_text = "\n".join(merged_history[-6:])  # last 3 turns
+    previous_question = session.get("last_question", "")
+    if not isinstance(previous_question, str):
+        previous_question = ""
+    previous_rows = session.get("last_rows", [])
+    if not isinstance(previous_rows, list):
+        previous_rows = []
 
     prompt = f"""
 The user asked:
@@ -642,6 +673,18 @@ Program performance facts (if present, use for weekly/monthly performance respon
 Data availability facts (must be respected):
 {availability_facts}
 
+Conversation history (for follow-up context):
+{history_text}
+
+Previous question:
+{previous_question}
+
+Previous result summary:
+{json.dumps(previous_rows[:5], default=json_safe)}
+
+Previous SQL (for follow-up context):
+{last_sql or ""}
+
 Here are the query results:
 {query_result_text}
 
@@ -662,5 +705,25 @@ Return markdown.
 If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """
 
+    assistant_chunks = []
     async for token in stream_chat_completion(prompt, system_prompt=ANALYSIS_SYSTEM):
+        assistant_chunks.append(token)
         yield token
+
+    # Update in-memory session context for next follow-up turn.
+    entry = SESSIONS.get(session_id, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    entry_history = entry.get("history", [])
+    if not isinstance(entry_history, list):
+        entry_history = []
+    entry_history.append(f"User: {question}")
+    assistant_text = "".join(assistant_chunks).strip()
+    if assistant_text:
+        entry_history.append(f"Assistant: {assistant_text}")
+    if len(entry_history) > 12:
+        entry_history = entry_history[-12:]
+    entry["history"] = entry_history
+    entry["last_question"] = question
+    entry["last_rows"] = safe_rows[:20]
+    SESSIONS[session_id] = entry
