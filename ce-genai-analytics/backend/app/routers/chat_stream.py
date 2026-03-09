@@ -35,6 +35,11 @@ from app.session_memory import (
     get_sql_context,
     store_sql_turn,
 )
+from app.time_frame_extractor import (
+    build_time_frame_context,
+    get_time_frame_condition,
+    extract_time_frame_from_question,
+)
 
 router = APIRouter()
 
@@ -1085,14 +1090,26 @@ async def chat_stream(
                 )
 
             platform, cleaned_message = extract_platform(effective_message)
+            
+            # Extract time frame context from previous query
+            time_frame_context = build_time_frame_context(last_sql, prior_question)
+            time_frame_condition = get_time_frame_condition(last_sql)
+            current_has_time_frame = extract_time_frame_from_question(cleaned_message) is not None
+            
             sql_prompt = cleaned_message
+            
+            # Add time frame context to prompt if current question lacks time frame
+            if time_frame_context and not current_has_time_frame:
+                sql_prompt = f"{cleaned_message}\n\nContext: {time_frame_context}"
+            
             # Priority 2: short metric follow-up should modify previous SQL, preserving filters.
             if short_metric_lookup and last_sql:
+                time_frame_note = f"\n{time_frame_context}" if time_frame_context else ""
                 sql_prompt = (
                     f"Previous SQL:\n{last_sql}\n\n"
-                    f"Follow-up user question: {cleaned_message}\n\n"
+                    f"Follow-up user question: {cleaned_message}{time_frame_note}\n\n"
                     "Modify the previous SQL to return only the requested metric. "
-                    "Do NOT remove existing WHERE filters."
+                    "Do NOT remove existing WHERE filters, especially time/date filters."
                 )
             if is_contextual_follow_up and (history or last_sql or stored_schema or last_result_columns):
                 sql_prompt = build_sql_follow_up_context_prompt(
@@ -1102,13 +1119,17 @@ async def chat_stream(
                     schema_fields=stored_schema or json_fields,
                     last_result_columns=last_result_columns,
                 )
+                # Append time frame context if missing
+                if time_frame_context and not current_has_time_frame:
+                    sql_prompt += f"\n\n{time_frame_context}\nIMPORTANT: Preserve this time frame in the generated SQL."
             # Keep the previous-SQL instruction dominant for short metric follow-ups.
             if short_metric_lookup and last_sql:
+                time_frame_note = f"\n{time_frame_context}" if time_frame_context else ""
                 sql_prompt = (
                     f"Previous SQL:\n{last_sql}\n\n"
-                    f"Follow-up user question: {cleaned_message}\n\n"
+                    f"Follow-up user question: {cleaned_message}{time_frame_note}\n\n"
                     "Modify the previous SQL to return only the requested metric. "
-                    "Do NOT remove existing WHERE filters."
+                    "Do NOT remove existing WHERE filters, especially time/date filters."
                 )
 
             generated_sql = generate_sql(sql_prompt, json_fields)
