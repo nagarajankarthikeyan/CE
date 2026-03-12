@@ -1234,12 +1234,16 @@ async def chat_stream(
                     for fsql in fallback_sqls:
                         if not fsql or fsql.strip() == sql.strip():
                             continue
-                        fallback_rows = execute_sql(fsql, {})
-                        if fallback_rows and not is_total_null_artifact(fallback_rows):
-                            rows = fallback_rows
-                            sql = fsql
-                            audit_data["generatedsql"] = sql[:4000]
-                            break
+                        try:
+                            fallback_rows = execute_sql(fsql, {})
+                            if fallback_rows and not is_total_null_artifact(fallback_rows):
+                                rows = fallback_rows
+                                sql = fsql
+                                audit_data["generatedsql"] = sql[:4000]
+                                break
+                        except Exception as fallback_ex:
+                            app_logger.warning(f"FALLBACK_SQL_FAILED: {str(fallback_ex)[:200]} | SQL: {fsql[:500]}")
+                            continue
             except Exception as ex:
                 err_text = str(ex)
                 if "Invalid timestamp: ''" in err_text or "Invalid date" in err_text or "Invalid timestamp" in err_text:
@@ -1398,9 +1402,11 @@ def inject_filters_safely(sql: str, conditions):
         raise ValueError(f"SQL must be string, got {type(sql)}")
 
     sql = sql.strip().rstrip(";")
+    sql = re.sub(r"\bWHERE\s*$", "", sql, flags=re.IGNORECASE).strip()
+    sql = re.sub(r"\bAND\s*$", "", sql, flags=re.IGNORECASE).strip()
 
     split_match = re.search(
-        r"\b(GROUP BY|ORDER BY|LIMIT)\b",
+        r"\b(GROUP BY|ORDER BY|LIMIT|HAVING)\b",
         sql,
         re.IGNORECASE
     )
@@ -1409,14 +1415,17 @@ def inject_filters_safely(sql: str, conditions):
     tail_sql = ""
 
     if split_match:
-        base_sql = sql[:split_match.start()]
-        tail_sql = sql[split_match.start():]
+        base_sql = sql[:split_match.start()].strip()
+        tail_sql = sql[split_match.start():].strip()
+
+    base_sql = re.sub(r"\bWHERE\s*$", "", base_sql, flags=re.IGNORECASE).strip()
+    base_sql = re.sub(r"\bAND\s*$", "", base_sql, flags=re.IGNORECASE).strip()
 
     if re.search(r"\bWHERE\b", base_sql, re.IGNORECASE):
-        base_sql += "\nAND " + "\nAND ".join(conditions)
+        base_sql += " AND " + " AND ".join(conditions)
     else:
-        base_sql += "\nWHERE " + "\nAND ".join(conditions)
+        base_sql += " WHERE " + " AND ".join(conditions)
 
-    return (base_sql + "\n" + tail_sql).strip()
+    return (base_sql + (" " + tail_sql if tail_sql else "")).strip()
 
 
