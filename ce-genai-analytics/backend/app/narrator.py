@@ -1,6 +1,7 @@
 from app.gpt_client import stream_chat_completion
 import json
 from datetime import date, datetime, timedelta
+from app.time_frame_extractor import extract_time_frame_from_sql, extract_time_frame_from_question
 
 SESSIONS = {}
 
@@ -9,7 +10,8 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
 
 ## Rules for your analysis
 1. Write in natural language - do NOT output raw tables or pipe-delimited data.
-2. Start with one short scope sentence on what window/slice you summarized.
+2. CRITICAL: Start EVERY response with the date range in the first line. Format: "For [specific dates with month, day, year], ..." or "[Metric] for [specific dates]: [value]". Use the Period facts section to get exact dates.
+3. Start with one short scope sentence on what window/slice you summarized.
 3. Use this dynamic response pattern (adapt wording to the question):
    - "<time window/topic> — Key takeaways"
    - "Overall performance (all platforms)" when platform/source fields exist, otherwise "Performance snapshot (<time/topic>)"
@@ -80,6 +82,7 @@ ANALYSIS_SYSTEM = """You are AskConnie, an expert marketing data analyst for Con
 ## Important Metric Rules
 - For program performance questions, prioritize in this order: spend, total enrollments, cost per enrollment (CPE), enrollment rate, clicks, impressions, CTR, CPC, CPM.
 - When CPE is computable, treat it as a primary efficiency KPI and discuss it ahead of CTR.
+- For campaign contribution/growth questions, ALWAYS include CPE in the Overall performance section when enrollment data is available.
 - When available in query results, always include all three in the response:
 - When available in query results, always include all three in the response:
   - Clicks
@@ -645,6 +648,18 @@ async def stream_narrative(
     breakdown_facts = build_breakdown_facts(safe_rows)
     program_facts = build_program_performance_facts(safe_rows)
     availability_facts = build_data_availability_facts(safe_rows)
+    
+    # Extract time frame from SQL or question
+    time_frame_info = ""
+    if last_sql:
+        tf = extract_time_frame_from_sql(last_sql)
+        if tf and tf.get("description"):
+            time_frame_info = f"Time frame: {tf['description']}"
+    if not time_frame_info:
+        tf_q = extract_time_frame_from_question(question)
+        if tf_q and tf_q.get("description"):
+            time_frame_info = f"Time frame: {tf_q['description']}"
+    
     session = SESSIONS.get(session_id, {})
     if not isinstance(session, dict):
         session = {}
@@ -674,6 +689,8 @@ The user asked:
 
 Today's date:
 {date.today().isoformat()}
+
+{time_frame_info}
 
 Verified facts (use these exact values when referenced):
 {verified_facts}
@@ -712,6 +729,11 @@ Sample rows:
 {json.dumps(safe_rows, indent=2)}
 
 Generate a dynamic business summary that follows the required response pattern.
+CRITICAL FIRST LINE REQUIREMENT: Your response MUST start with the date range. Examples:
+- "For January 1, 2024 through January 31, 2024, total spend was $X..."
+- "Total spend for February 1, 2024 through February 7, 2024: $X"
+- "For the week of March 4, 2024 through March 10, 2024, ..."
+Use the Period facts section above to extract the exact date range. If Period facts shows a date range, use those exact dates in your first line.
 Adapt the heading text and bullet content to the question and available metrics.
 If breakdown facts are provided, include the grouped amounts and share percentages explicitly in the response.
 Mandatory final check before responding: include "Enrollment Rate" explicitly in the output (or "Enrollment Rate: N/A" if not computable).
@@ -722,6 +744,9 @@ Mandatory style check for executive-summary requests:
 Mandatory consistency check:
 - If data availability says metrics are present, do not claim "no data", "all null", or "not available".
 - If data availability says all metrics are null, explicitly state the limitation.
+IMPORTANT: When answering metric questions (like "what is the total spend?"), ALWAYS mention the time frame with SPECIFIC DATES in your response.
+If time frame information is provided above, include the exact date range prominently in your answer (e.g., "February 1, 2024 through February 7, 2024").
+For follow-up questions without explicit time context, use the period facts to determine and state the date range.
 Return markdown.
 If suitable, append exactly one <CHART>{{...}}</CHART> block after prose.
 """
